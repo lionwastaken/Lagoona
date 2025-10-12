@@ -6,14 +6,11 @@ import asyncio
 import random
 from datetime import time, datetime, timedelta
 from dotenv import load_dotenv
-from fuzzywuzzy import fuzz
-import threading # For the simple web server fix
+import threading 
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+import json
 
 # --- Render/Uptime Fix: Simple Web Server ---
-# This minimal web server binds a port to satisfy Render's requirement for a Web Service.
-# This prevents the "Port scan timeout" error and keeps UptimeRobot happy.
-# We run the actual bot logic as a standard discord bot process.
-from http.server import SimpleHTTPRequestHandler, HTTPServer
 
 class HealthCheckHandler(SimpleHTTPRequestHandler):
     """A minimal handler for a health check."""
@@ -71,6 +68,11 @@ WELCOME_SETTINGS = {
     'goodbye_message': "Goodbye {member}, we hope to see you again soon!"
 }
 
+DAILY_POST_SETTINGS = {
+    'channel_id': None,
+    'time': time(hour=10, minute=0) # 10:00 AM UTC default
+}
+
 # Banner Images (Mocking the storage of image URLs for randomization)
 BANNER_IMAGES = [
     "https://placehold.co/1200x400/0000FF/FFFFFF?text=SG+Studio+Banner+1", # Mock URL for uploaded:officialbanner.jpg
@@ -112,7 +114,7 @@ async def generate_response(prompt: str, context: str, user: str = None):
 
     payload = {
         "contents": [{"parts": [{"text": full_prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "systemInstruction": {"parts": [{"text: system_instruction}]},
     }
     
     async with aiohttp.ClientSession() as session:
@@ -127,8 +129,12 @@ async def generate_response(prompt: str, context: str, user: str = None):
                         await asyncio.sleep(2 ** i)
                         continue
                     else:
+                        # Log detailed error for debugging
+                        error_details = await response.text()
+                        print(f"Gemini API Non-200 Error: {response.status} - {error_details}")
                         return f"API Error: Lagoona's connection is down (Status: {response.status})."
-            except Exception:
+            except Exception as e:
+                print(f"Gemini API Request Failed (Attempt {i+1}): {e}")
                 await asyncio.sleep(2 ** i)
                 continue
         return "Lagoona is too busy right now. Please try again later."
@@ -149,8 +155,8 @@ async def add_announcement_reactions(message: discord.Message):
     try:
         await message.add_reaction('💛') # :yellow_heart:
         await message.add_reaction('⭐') # :star:
-        # discord.utils.get(message.guild.emojis, name='yah') # If custom emoji is used
-        await message.add_reaction('🙌') # close enough for :yah:
+        # Using a default emoji for :yah: if a custom one isn't available
+        await message.add_reaction('🙌') 
     except Exception as e:
         print(f"Failed to add reactions: {e}")
 
@@ -194,6 +200,7 @@ async def on_ready():
     
     if CLIENT_ID:
         try:
+            # Syncing global commands
             await bot.tree.sync()
             print("Synced application commands globally.")
         except Exception as e:
@@ -247,14 +254,58 @@ async def on_message(message):
         prompt = message.content
         context = STUDIO_KNOWLEDGE + f"\n\n**Special Instruction:** The user is contacting you in a private message. Advise them that if they are looking to appeal a ban or kick, they must use the appeal server link: {APPEAL_SERVER_LINK}"
         
-        response_text = await generate_response(prompt, context, message.author.name)
+        # Use a more serious tone for DM support (as it's often for appeals/issues)
+        dm_context = f"You are Lagoona, the professional and supportive DM customer service agent for Stargame Studio. The appeal server is {APPEAL_SERVER_LINK}."
+        response_text = await generate_response(prompt, dm_context, message.author.name)
         await message.channel.send(response_text)
         return # Stop processing DMs
 
     # --- Server Moderation & Keyword Response ---
     content = message.content.lower()
     
-    # 1. Moderation: Check for minor TOS violations
+    # 1. Moderation: Check for minor TOS violations (Simplified for brevity)
+    # ... (Moderation logic remains the same as in the previous file) ...
+    def is_excessive_caps(content: str) -> bool:
+        if len(content) < 10: return False
+        uppercase_count = sum(1 for char in content if char.isupper() and char.isalpha())
+        alpha_count = sum(1 for char in content if char.isalpha())
+        if alpha_count < 5: return False
+        return (uppercase_count / alpha_count) > 0.60
+
+    def is_gif_post(message: discord.Message) -> bool:
+        gif_keywords = ['tenor.com', 'giphy.com', '.gif']
+        content_lower = message.content.lower()
+        return any(k in content_lower for k in gif_keywords) or any(embed.type == 'gifv' for embed in message.embeds)
+
+    async def apply_moderation_action(member: discord.Member, channel: discord.TextChannel, reason: str, action: str = 'warn'):
+        user_id = member.id
+        STRIKE_WARN, STRIKE_MUTE, STRIKE_KICK = 1, 3, 5
+        
+        MOD_STRIKES[user_id] = MOD_STRIKES.get(user_id, 0) + 1
+        strikes = MOD_STRIKES[user_id]
+        
+        mod_message = ""
+        
+        if strikes == STRIKE_WARN:
+            mod_message = f"🚨 **WARNING** {member.mention}: {reason}. Strike **{strikes}/{STRIKE_KICK}**."
+        elif strikes == STRIKE_MUTE:
+            mod_message = f"🔇 **MUTE ALERT** {member.mention}: You've reached **{strikes} strikes**. You are muted for 15 minutes."
+            try:
+                await member.timeout(timedelta(minutes=15), reason=reason)
+            except discord.Forbidden:
+                mod_message += "\n(Error: Cannot apply Mute/Timeout due to missing permissions.)"
+        elif strikes >= STRIKE_KICK:
+            try:
+                mod_message = f"👋 **KICK** {member.mention}: Maximum strikes reached (**{strikes}**). You are being kicked as per TOS."
+                await member.kick(reason=f"Automated moderation for repeated violations: {reason}")
+                del MOD_STRIKES[user_id] 
+            except discord.Forbidden:
+                mod_message += "\n(Error: Cannot apply Kick due to missing permissions.)"
+        else:
+            mod_message = f"⚠️ **NOTICE** {member.mention}: Strike count updated to **{strikes}** for {reason}."
+            
+        await channel.send(mod_message)
+
     is_violation = False
     reason = None
     
@@ -273,136 +324,210 @@ async def on_message(message):
         except discord.Forbidden:
              await message.channel.send("⚠️ Cannot moderate this message due to missing permissions. Please fix bot permissions.", delete_after=5)
         return 
-
+    
     # 2. Lagoona Keyword Response
-    if 'lagoona' in content or '/help' in content: # Trigger also if /help is used
-        if 'lagoona' in content:
-            await message.channel.send(f"Activating support for {message.author.mention}. Please wait while Lagoona processes your request...")
+    if 'lagoona' in content: 
+        await message.channel.send(f"Activating support for {message.author.mention}. Please wait while Lagoona processes your request...")
             
         response_text = await generate_response(message.content, STUDIO_KNOWLEDGE, message.author.name)
         await message.channel.send(response_text)
-
+    
+    # Ensure commands are processed after message content checks
     await bot.process_commands(message) 
 
-# --- SLASH COMMANDS ---
+# --- RE-ADDED MISSING SLASH COMMANDS ---
 
-# Re-defining moderation helpers here for visibility
-def is_excessive_caps(content: str) -> bool:
-    if len(content) < 10: return False
-    uppercase_count = sum(1 for char in content if char.isupper() and char.isalpha())
-    alpha_count = sum(1 for char in content if char.isalpha())
-    if alpha_count < 5: return False
-    return (uppercase_count / alpha_count) > 0.60
-
-def is_gif_post(message: discord.Message) -> bool:
-    gif_keywords = ['tenor.com', 'giphy.com', '.gif']
-    content_lower = message.content.lower()
-    return any(k in content_lower for k in gif_keywords) or any(embed.type == 'gifv' for embed in message.embeds)
-
-async def apply_moderation_action(member: discord.Member, channel: discord.TextChannel, reason: str, action: str = 'warn'):
-    user_id = member.id
-    STRIKE_WARN, STRIKE_MUTE, STRIKE_KICK = 1, 3, 5
+@bot.tree.command(name="help", description="Get a list of commands and general studio assistance.")
+async def help_command(interaction: discord.Interaction, topic: str = None):
+    """Provides a dynamic help response using the Gemini API."""
     
-    MOD_STRIKES[user_id] = MOD_STRIKES.get(user_id, 0) + 1
-    strikes = MOD_STRIKES[user_id]
-    
-    mod_message = ""
-    
-    if strikes == STRIKE_WARN:
-        mod_message = f"🚨 **WARNING** {member.mention}: {reason}. Strike **{strikes}/{STRIKE_KICK}**."
-    elif strikes == STRIKE_MUTE:
-        mod_message = f"🔇 **MUTE ALERT** {member.mention}: You've reached **{strikes} strikes**. You are muted for 15 minutes."
-        try:
-            await member.timeout(timedelta(minutes=15), reason=reason)
-        except discord.Forbidden:
-            mod_message += "\n(Error: Cannot apply Mute/Timeout due to missing permissions.)"
-    elif strikes >= STRIKE_KICK:
-        try:
-            mod_message = f"👋 **KICK** {member.mention}: Maximum strikes reached (**{strikes}**). You are being kicked as per TOS."
-            await member.kick(reason=f"Automated moderation for repeated violations: {reason}")
-            del MOD_STRIKES[user_id] 
-        except discord.Forbidden:
-            mod_message += "\n(Error: Cannot apply Kick due to missing permissions.)"
+    if topic:
+        prompt = f"The user is asking for help on the topic: '{topic}'. Use the provided studio knowledge to give a detailed, helpful answer."
     else:
-        mod_message = f"⚠️ **NOTICE** {member.mention}: Strike count updated to **{strikes}** for {reason}."
-        
-    await channel.send(mod_message)
+        prompt = "The user is asking for general help. Provide a welcoming overview of Stargame Studio, list the main slash commands for support, and tell them about the 'LAGOONA' keyword feature."
 
-@bot.tree.command(name="announcement", description="Post a staff announcement with custom title and reactions.")
-@discord.app_commands.describe(
-    title="The banner title for the announcement.",
-    message="The main message content for the announcement.",
-    image_url="Optional: URL of an image for the banner. Leave empty for a random Stargame banner."
-)
-async def announcement_command(interaction: discord.Interaction, title: str, message: str, image_url: str = None):
-    """Allows only authorized users to post an announcement with customization."""
-    author_username = interaction.user.name 
+    context = STUDIO_KNOWLEDGE + (
+        "\n\n**Main Commands:** /announcement, /settask, /ticket, /verify, /set_welcome_goodbye. "
+        "Also, the bot responds to the keyword 'LAGOONA' for quick questions."
+    )
+    
+    response_text = await generate_response(prompt, context, interaction.user.name)
+    await interaction.response.send_message(response_text, ephemeral=False)
 
-    if is_authorized(author_username):
-        
-        # Determine footer and image
-        footer_text = "Authorized Message by lionelclementofficial" if is_founder(author_username) else "Authorized Message by Stargame Studio Staff"
-        final_image_url = image_url if image_url else random.choice(BANNER_IMAGES)
-        
-        embed = discord.Embed(
-            title=f"📣 {title}",
-            description=message,
-            color=discord.Color.blue()
+@bot.tree.command(name="ticket", description="Create a private ticket thread for staff support/appeals.")
+@discord.app_commands.describe(issue="Brief description of the issue or appeal.")
+async def ticket_command(interaction: discord.Interaction, issue: str):
+    """Creates a private thread for a user to discuss an issue with staff."""
+    
+    # Define the starting message for the thread
+    start_message = (
+        f"**New Support Ticket for {interaction.user.mention}**\n\n"
+        f"**Issue:** {issue}\n\n"
+        f"A staff member will be with you shortly. If this is an appeal, please provide relevant context and evidence."
+    )
+
+    try:
+        # Create a private thread in the channel where the command was used
+        thread = await interaction.channel.create_thread(
+            name=f"Ticket-{interaction.user.name}-{random.randint(100, 999)}",
+            type=discord.ChannelType.private_thread,
+            reason="User initiated support ticket"
         )
-        embed.set_image(url=final_image_url)
-        embed.set_footer(text=footer_text)
+        await thread.send(start_message)
         
-        await interaction.response.send_message("Announcement pending! Posting now...", ephemeral=True) 
-        
-        public_message = await interaction.channel.send("@everyone", embed=embed) 
-
-        # Add reactions if @everyone or @Community Member (mocked role mention) is in the message
-        if "@everyone" in message or "@community member" in message.lower():
-            await add_announcement_reactions(public_message)
-    else:
         await interaction.response.send_message(
-            f"🚫 Access Denied. Only authorized staff ({', '.join(ANNOUNCEMENT_AUTHORS)}) can use this command.",
+            f"✅ Your support ticket has been opened! Please head to **{thread.mention}** to continue your discussion privately with staff.",
             ephemeral=True
         )
 
-# --- Welcome/Goodbye Command ---
-@bot.tree.command(name="set_welcome_goodbye", description="Set up or disable welcome and goodbye messages.")
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I do not have permission to create threads in this channel. Please ask an admin to check my permissions.",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="verify", description="Verify your Roblox account membership in the Stargame Studio Group.")
+async def verify_command(interaction: discord.Interaction):
+    """Initiates a mock Roblox verification process."""
+    
+    # NOTE: Full Roblox verification requires a dedicated external API service.
+    # This is a mock response prompting the user to link the account.
+    
+    response_text = (
+        f"🔗 **Roblox Verification Initiated for {interaction.user.name}**\n\n"
+        "To verify your identity and link your Roblox account, please follow these steps:\n"
+        f"1. **Join the official Stargame Studio Group:** (Group ID: `{ROBLOX_GROUP_ID}`).\n"
+        "2. **DM a specific verification code** (e.g., `SG-{unique_code}`) to me (Lagoona) from your Roblox account bio/status (this step is mocked).\n\n"
+        "*(Note: For a live verification system, a third-party service or a Roblox bot would be needed to check the user's presence in the group.)*"
+    )
+    
+    await interaction.response.send_message(response_text, ephemeral=True)
+
+
+# --- Daily Post Setup Command ---
+@bot.tree.command(name="setdailyposts", description="[STAFF ONLY] Set the channel and time for the daily quote/question post.")
 @discord.app_commands.describe(
-    action="Enable or disable the messages.",
-    channel="The channel for the messages.",
-    welcome_msg="New member message (use {member} as placeholder).",
-    goodbye_msg="Leaving member message (use {member} as placeholder)."
+    channel="The channel for daily posts.",
+    utc_time="The time for the post (HH:MM UTC format, e.g., 10:00)."
 )
-async def set_welcome_goodbye_command(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None, welcome_msg: str = None, goodbye_msg: str = None):
-    """Enables/disables and configures the welcome/goodbye system."""
+async def set_daily_posts_command(interaction: discord.Interaction, channel: discord.TextChannel, utc_time: str):
+    """Configures the daily scheduled post."""
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("You must be an administrator to manage welcome messages.", ephemeral=True)
+        return await interaction.response.send_message("🚫 You must be an administrator to set up daily posts.", ephemeral=True)
 
-    action = action.lower()
-    if action == 'enable':
-        if not channel:
-            return await interaction.response.send_message("You must specify a channel to enable the feature.", ephemeral=True)
+    try:
+        hour, minute = map(int, utc_time.split(':'))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
             
-        WELCOME_SETTINGS['enabled'] = True
-        WELCOME_SETTINGS['channel_id'] = channel.id
-        if welcome_msg:
-             WELCOME_SETTINGS['welcome_message'] = welcome_msg
-        if goodbye_msg:
-             WELCOME_SETTINGS['goodbye_message'] = goodbye_msg
+        new_time = time(hour=hour, minute=minute)
+        DAILY_POST_SETTINGS['channel_id'] = channel.id
+        DAILY_POST_SETTINGS['time'] = new_time
+
+        # Restart the task to use the new time
+        daily_post_task.restart()
 
         await interaction.response.send_message(
-            f"✅ Welcome/Goodbye messages **enabled** in {channel.mention}.\nWelcome: `{WELCOME_SETTINGS['welcome_message']}`\nGoodbye: `{WELCOME_SETTINGS['goodbye_message']}`",
+            f"✅ Daily quote/question post set for {channel.mention} at **{utc_time} UTC**.",
             ephemeral=True
         )
-    elif action == 'disable':
-        WELCOME_SETTINGS['enabled'] = False
-        WELCOME_SETTINGS['channel_id'] = None
-        await interaction.response.send_message("❌ Welcome/Goodbye messages **disabled**.", ephemeral=True)
+    except ValueError:
+        await interaction.response.send_message(
+            "❌ Invalid time format. Please use **HH:MM** (24-hour UTC time, e.g., 08:30).",
+            ephemeral=True
+        )
+
+# --- DAILY POST SCHEDULER (FIXED) ---
+
+@tasks.loop(time=DAILY_POST_SETTINGS['time'])
+async def daily_post_task():
+    """Generates and posts a daily quote or question to encourage engagement."""
+    
+    channel_id = DAILY_POST_SETTINGS['channel_id']
+    if not channel_id:
+        # print("Daily post channel not set.")
+        return 
+
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        # print(f"Daily post channel (ID: {channel_id}) not found.")
+        return 
+
+    # Determine if it's a quote or a question
+    is_question = random.choice([True, False])
+    
+    if is_question:
+        prompt = "Generate a single, engaging, and thoughtful question for a developer community (Stargame Studio) about game design, future tech, or creative work. Start the response with '❓ Daily Question:'"
     else:
-        await interaction.response.send_message("Invalid action. Use 'enable' or 'disable'.", ephemeral=True)
+        prompt = "Generate a single, motivating, and concise quote about creativity, teamwork, or development. Attribute it to a fictional 'Lagoona' or a famous tech/creative figure. Start the response with '⭐ Daily Quote:'"
+        
+    context = STUDIO_KNOWLEDGE + "\n\n**Special Instruction:** Ensure the output is *only* the quote/question and its attribution, ready to be posted directly. Do not include any extra conversation or formatting."
+    
+    post_content = await generate_response(prompt, context, "System Bot")
+
+    embed = discord.Embed(
+        title="✨ Stargame Studio Daily Engagement ✨",
+        description=post_content,
+        color=discord.Color.purple()
+    )
+
+    try:
+        message = await channel.send("@everyone", embed=embed)
+        # Add reactions to the daily post since it pings @everyone
+        await add_announcement_reactions(message)
+    except discord.Forbidden:
+        print(f"Failed to send daily post to channel {channel_id} (Forbidden).")
 
 
-# --- Task Management Commands ---
+# --- Task Reminder Task (Remains the same) ---
+@tasks.loop(minutes=5)
+async def task_reminder_task():
+    """Checks for upcoming deadlines and sends reminders."""
+    for user_id, tasks_list in list(TASK_REMINDERS.items()):
+        member = bot.get_user(user_id)
+        if not member:
+            del TASK_REMINDERS[user_id]
+            continue
+            
+        for task_item in list(tasks_list):
+            time_until_deadline = task_item['deadline'] - datetime.now()
+            
+            # Reminder 1: 12 hours before
+            if timedelta(hours=11, minutes=55) <= time_until_deadline <= timedelta(hours=12, minutes=5):
+                reminder_prompt = f"Friendly reminder for {member.name}: Your task '{task_item['task']}' is due in approximately 12 hours at {task_item['deadline'].strftime('%Y-%m-%d %H:%M')}."
+                reminder_message = await generate_response(reminder_prompt, "Act as a friendly productivity assistant.", member.name)
+                try:
+                    await member.send(reminder_message)
+                except Exception:
+                    pass # Cannot DM user
+
+            # Reminder 2: Deadline reached
+            elif time_until_deadline <= timedelta(minutes=0):
+                # Deadline met/passed - send final warning and remove
+                tasks_list.remove(task_item)
+                
+                final_prompt = f"The deadline for your task '{task_item['task']}' has passed! Please use `/completetask` or notify staff (Setter: {task_item['original_setter']}) immediately."
+                final_message = await generate_response(final_prompt, "Act as an urgent, professional notice bot.", member.name)
+                
+                try:
+                    await member.send(final_message)
+                except Exception:
+                    pass
+                
+                # Notify original setter (if possible)
+                for guild in bot.guilds:
+                    setter = discord.utils.get(guild.members, name=task_item['original_setter'])
+                    if setter:
+                        try:
+                            await setter.send(f"⚠️ **DEADLINE ALERT:** Task '{task_item['task']}' for {member.name} has passed.")
+                        except Exception:
+                            pass
+                
+        if not tasks_list:
+            del TASK_REMINDERS[user_id]
+
+
+# --- Task Management Commands (Remain the same) ---
 
 @bot.tree.command(name="settask", description="Assign a task and deadline to a user.")
 @discord.app_commands.describe(
@@ -532,55 +657,87 @@ async def forwarded_task_command(interaction: discord.Interaction, old_user: dis
         await interaction.response.send_message(f"❌ {old_user.mention} has no active tasks to forward.", ephemeral=True)
 
 
-# --- Scheduled Task for Task Reminders ---
-@tasks.loop(minutes=5)
-async def task_reminder_task():
-    """Checks for upcoming deadlines and sends reminders."""
-    for user_id, tasks_list in list(TASK_REMINDERS.items()):
-        member = bot.get_user(user_id)
-        if not member:
-            del TASK_REMINDERS[user_id]
-            continue
+# --- Founder Only Commands (Remain the same) ---
+
+@bot.tree.command(name="announcement", description="Post a staff announcement with custom title and reactions.")
+@discord.app_commands.describe(
+    title="The banner title for the announcement.",
+    message="The main message content for the announcement.",
+    image_url="Optional: URL of an image for the banner. Leave empty for a random Stargame banner."
+)
+async def announcement_command(interaction: discord.Interaction, title: str, message: str, image_url: str = None):
+    """Allows only authorized users to post an announcement with customization."""
+    author_username = interaction.user.name 
+
+    if is_authorized(author_username):
+        
+        # Determine footer and image
+        footer_text = "Authorized Message by lionelclementofficial" if is_founder(author_username) else "Authorized Message by Stargame Studio Staff"
+        final_image_url = image_url if image_url else random.choice(BANNER_IMAGES)
+        
+        embed = discord.Embed(
+            title=f"📣 {title}",
+            description=message,
+            color=discord.Color.blue()
+        )
+        embed.set_image(url=final_image_url)
+        embed.set_footer(text=footer_text)
+        
+        await interaction.response.send_message("Announcement pending! Posting now...", ephemeral=True) 
+        
+        # Check for role pings and add the actual role mention if specified
+        ping_content = ""
+        if "@everyone" in message.lower():
+            ping_content += "@everyone "
+        if "@community member" in message.lower():
+            # Mocking the role mention. A real bot would search for the role object
+            ping_content += "@Community Member Role " 
+
+        public_message = await interaction.channel.send(ping_content, embed=embed) 
+
+        # Add reactions
+        await add_announcement_reactions(public_message)
+    else:
+        await interaction.response.send_message(
+            f"🚫 Access Denied. Only authorized staff ({', '.join(ANNOUNCEMENT_AUTHORS)}) can use this command.",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="set_welcome_goodbye", description="Set up or disable welcome and goodbye messages.")
+@discord.app_commands.describe(
+    action="Enable or disable the messages.",
+    channel="The channel for the messages.",
+    welcome_msg="New member message (use {member} as placeholder).",
+    goodbye_msg="Leaving member message (use {member} as placeholder)."
+)
+async def set_welcome_goodbye_command(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None, welcome_msg: str = None, goodbye_msg: str = None):
+    """Enables/disables and configures the welcome/goodbye system."""
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("You must be an administrator to manage welcome messages.", ephemeral=True)
+
+    action = action.lower()
+    if action == 'enable':
+        if not channel:
+            return await interaction.response.send_message("You must specify a channel to enable the feature.", ephemeral=True)
             
-        for task_item in list(tasks_list):
-            time_until_deadline = task_item['deadline'] - datetime.now()
-            
-            # Reminder 1: 12 hours before
-            if timedelta(hours=11, minutes=55) <= time_until_deadline <= timedelta(hours=12, minutes=5):
-                reminder_prompt = f"Friendly reminder for {member.name}: Your task '{task_item['task']}' is due in approximately 12 hours at {task_item['deadline'].strftime('%Y-%m-%d %H:%M')}."
-                reminder_message = await generate_response(reminder_prompt, "Act as a friendly productivity assistant.", member.name)
-                try:
-                    await member.send(reminder_message)
-                except Exception:
-                    pass # Cannot DM user
+        WELCOME_SETTINGS['enabled'] = True
+        WELCOME_SETTINGS['channel_id'] = channel.id
+        if welcome_msg:
+             WELCOME_SETTINGS['welcome_message'] = welcome_msg
+        if goodbye_msg:
+             WELCOME_SETTINGS['goodbye_message'] = goodbye_msg
 
-            # Reminder 2: Deadline reached
-            elif time_until_deadline <= timedelta(minutes=0):
-                # Deadline met/passed - send final warning and remove
-                tasks_list.remove(task_item)
-                
-                final_prompt = f"The deadline for your task '{task_item['task']}' has passed! Please use `/completetask` or notify staff (Setter: {task_item['original_setter']}) immediately."
-                final_message = await generate_response(final_prompt, "Act as an urgent, professional notice bot.", member.name)
-                
-                try:
-                    await member.send(final_message)
-                except Exception:
-                    pass
-                
-                # Notify original setter (if possible)
-                for guild in bot.guilds:
-                    setter = discord.utils.get(guild.members, name=task_item['original_setter'])
-                    if setter:
-                        try:
-                            await setter.send(f"⚠️ **DEADLINE ALERT:** Task '{task_item['task']}' for {member.name} has passed.")
-                        except Exception:
-                            pass
-                
-        if not tasks_list:
-            del TASK_REMINDERS[user_id]
+        await interaction.response.send_message(
+            f"✅ Welcome/Goodbye messages **enabled** in {channel.mention}.\nWelcome: `{WELCOME_SETTINGS['welcome_message']}`\nGoodbye: `{WELCOME_SETTINGS['goodbye_message']}`",
+            ephemeral=True
+        )
+    elif action == 'disable':
+        WELCOME_SETTINGS['enabled'] = False
+        WELCOME_SETTINGS['channel_id'] = None
+        await interaction.response.send_message("❌ Welcome/Goodbye messages **disabled**.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Invalid action. Use 'enable' or 'disable'.", ephemeral=True)
 
-
-# --- Founder Only Commands ---
 
 @bot.tree.command(name="revampallusernames", description="[FOUNDER ONLY] Revamp all server members' nicknames.")
 @discord.app_commands.describe(nickname_prefix="The prefix/template for the new nicknames (e.g., 'SG | {name}').")
@@ -598,7 +755,7 @@ async def revamp_usernames_command(interaction: discord.Interaction, nickname_pr
         if member.bot:
             continue
             
-        # Create smart nickname (e.g., first word of username + discriminator)
+        # Create smart nickname (e.g., first word of username)
         base_name = member.name.split(' ')[0]
         new_nickname = nickname_prefix.replace('{name}', base_name)
         
@@ -626,12 +783,9 @@ async def verify_all_members_command(interaction: discord.Interaction):
     await interaction.response.defer()
     
     # --- MOCKING Roblox API Check ---
-    # NOTE: Real implementation requires an external API call to check group membership.
-    # We will simulate the check here.
-    
     non_members = []
     
-    # Simulate finding 5 random non-verified users (in a real app, this list comes from an API)
+    # Simulate finding 5 random non-verified users
     for member in interaction.guild.members:
         if not member.bot and random.random() < 0.05 and len(non_members) < 5: 
             non_members.append(member.mention)
@@ -640,7 +794,7 @@ async def verify_all_members_command(interaction: discord.Interaction):
         non_members_list = ", ".join(non_members)
         ping_message = (
             f"🔔 **Attention!** The following members appear to be missing from the **Stargame Studio Roblox Group (ID: {ROBLOX_GROUP_ID})** or are unverified: {non_members_list}\n\n"
-            "Please **join the group** and use `/verify` to link your Roblox account with Discord to ensure you have full access to community roles!"
+            "Please **join the group** and use `/verify` to link your Roblox account with Discord to ensure you have full access to community roles! Group Link: https://www.roblox.com/groups/{ROBLOX_GROUP_ID}/Stargame-Studio"
         )
         await interaction.followup.send(ping_message)
     else:
@@ -654,9 +808,8 @@ if __name__ == "__main__":
         print("Please ensure DISCORD_TOKEN, GEMINI_API_KEY, and CLIENT_ID are set.")
     else:
         # Start the web server in a separate thread to keep Render happy
-        # while the bot runs in the main thread
         web_server_thread = threading.Thread(target=run_web_server)
-        web_server_thread.daemon = True # Daemon thread exits when the main program ends
+        web_server_thread.daemon = True 
         web_server_thread.start()
         
         # Run the Discord bot
