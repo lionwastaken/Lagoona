@@ -7,7 +7,9 @@ from pathlib import Path
 
 logger = logging.getLogger("webserver")
 
-STATIC_DIR = Path("static")
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+(STATIC_DIR / "banners").mkdir(parents=True, exist_ok=True)
 
 async def health_handler(request):
     return web.json_response({"status": "ok", "service": "lagoona"})
