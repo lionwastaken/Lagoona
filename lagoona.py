@@ -39,12 +39,23 @@ class LagoonaBot(commands.Bot):
         await self.load_extension("cogs.tickets")
         await self.load_extension("cogs.voice_commands")
         await self.load_extension("cogs.mention_response")
-        # Sync application commands (global). For faster dev, consider guild-specific sync.
+
+        # Sync slash commands
         try:
             await self.tree.sync()
             logger.info("Slash commands synced.")
         except Exception as e:
             logger.exception("Failed to sync slash commands: %s", e)
+
+        # ✅ Schedule background tasks here (inside setup_hook!)
+        self.loop.create_task(self.start_background_tasks())
+
+    async def start_background_tasks(self):
+        await self.wait_until_ready()
+        cog = self.get_cog("AnnouncementsCog")
+        if cog and hasattr(cog, "daily_post_loop"):
+            cog.daily_post_loop.start()
+            logger.info("Started daily_post_loop from setup_hook().")
 
     async def on_ready(self):
         logger.info(f"Logged in as {self.user} (id: {self.user.id})")
@@ -60,31 +71,22 @@ def start_background_webserver():
 
 def main():
     try:
+        # Start healthcheck webserver in separate thread
         web_thread = threading.Thread(target=start_background_webserver, daemon=True)
         web_thread.start()
 
         bot = LagoonaBot()
-
-        async def start_tasks():
-            await bot.wait_until_ready()
-            cog = bot.get_cog("AnnouncementsCog")
-            if cog and hasattr(cog, "daily_post_loop"):
-                cog.daily_post_loop.start()
-
-        bot.loop.create_task(start_tasks())
 
         token = os.environ.get("DISCORD_TOKEN")
         if not token:
             logger.error("DISCORD_TOKEN not set in environment.")
             return
 
+        # Just run the bot normally — no manual .loop access needed
         bot.run(token)
+
     except Exception as e:
         logger.exception("Lagoona crashed during startup: %s", e)
-
-
-    bot.loop.create_task(start_tasks())
-    bot.run(token)
 
 if __name__ == "__main__":
     main()
