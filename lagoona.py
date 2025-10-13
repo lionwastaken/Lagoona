@@ -37,6 +37,8 @@ class LagoonaBot(commands.Bot):
         await self.load_extension("cogs.moderation")
         await self.load_extension("cogs.announcements")
         await self.load_extension("cogs.tickets")
+        await self.load_extension("cogs.voice_commands")
+        await self.load_extension("cogs.mention_response")
         # Sync application commands (global). For faster dev, consider guild-specific sync.
         try:
             await self.tree.sync()
