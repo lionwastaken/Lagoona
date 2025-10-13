@@ -52,11 +52,15 @@ class GeneralFeatures(commands.Cog):
         # {guild_id: channel_id} to track the LLM's primary channel (optional but useful)
         self.llm_channel_id = {} 
 
-    # --- Commands ---
+    # --- Commands (using '/' prefix as requested) ---
 
     @commands.command(name='autospeak', help='Toggle or set the dedicated channel for Lagoona\'s LLM-powered responses.')
     @commands.has_permissions(administrator=True)
     async def autospeak(self, ctx, action: str, channel: discord.TextChannel = None):
+        """
+        Command: /autospeak enable [#channel] | /autospeak disable
+        Toggles Lagoona's automatic response feature using the Gemini API.
+        """
         guild_id = ctx.guild.id
         action = action.lower()
 
@@ -67,6 +71,7 @@ class GeneralFeatures(commands.Cog):
                 self.llm_channel_id[guild_id] = channel.id
                 await ctx.send(f"✅ **Auto-Speaking ENABLED** and set to channel: {channel.mention}. Lagoona will now answer general questions in this channel using her studio knowledge.")
             else:
+                self.llm_channel_id.pop(guild_id, None) # Clear designated channel if enabling globally
                 await ctx.send("✅ **Auto-Speaking ENABLED** globally. Lagoona will answer general questions in any channel using her studio knowledge.")
         
         elif action == 'disable':
@@ -75,24 +80,28 @@ class GeneralFeatures(commands.Cog):
             await ctx.send("❌ **Auto-Speaking DISABLED**. Lagoona will now only respond when explicitly pinged or via slash commands.")
         
         else:
-            await ctx.send("❓ Invalid action. Please use `!autospeak enable [#channel]` or `!autospeak disable`.")
+            await ctx.send("❓ Invalid action. Please use `/autospeak enable [#channel]` or `/autospeak disable`.")
 
     @commands.command(name='automod', help='Toggle AutoMod based on Discord/SG/Roblox rules.')
     @commands.has_permissions(administrator=True)
     async def automod_toggle(self, ctx, action: str):
+        """
+        Command: /automod enable | /automod disable
+        Toggles the comprehensive auto-moderation system.
+        """
         guild_id = ctx.guild.id
         action = action.lower()
 
         if action == 'enable':
             self.bot.automod_enabled[guild_id] = True
-            await ctx.send("✅ **AutoMod ENABLED**. Lagoona is now actively monitoring for rule violations and mass-pings.")
+            await ctx.send("✅ **AutoMod ENABLED**. Lagoona is now actively monitoring for rule violations, raids, mass-pings, and alternative accounts.")
         
         elif action == 'disable':
             self.bot.automod_enabled[guild_id] = False
-            await ctx.send("❌ **AutoMod DISABLED**. Please be aware that the server is now less protected against raids and violations.")
+            await ctx.send("❌ **AutoMod DISABLED**. Please be aware that the server is now less protected against major threats.")
         
         else:
-            await ctx.send("❓ Invalid action. Please use `!automod enable` or `!automod disable`.")
+            await ctx.send("❓ Invalid action. Please use `/automod enable` or `/automod disable`.")
 
 
     # --- Events ---
@@ -176,15 +185,16 @@ class GeneralFeatures(commands.Cog):
     @commands.Cog.listener()
     async def on_send_announcement(self, channel, content=None, embed=None):
         """
-        Custom listener for announcement events. 
+        Custom listener for announcement events to ensure a randomized banner is added. 
         Requires the main bot file to call bot.dispatch('send_announcement', channel, content, embed)
         """
         if embed and not embed.image.url:
             # Only add a random banner if the embed doesn't already have one
+            # This ensures images are randomized per announcement
             embed.set_image(url=self.bot.get_random_banner_url())
         
         if channel:
-            await channel.send(content, embed=embed)
+            await channel.send(content if content is not None else "", embed=embed)
 
 
     async def on_message(self, message):
@@ -195,18 +205,18 @@ class GeneralFeatures(commands.Cog):
         guild = message.guild
         member = message.author
         
-        # --- 1. Automod Check (and Bypass) ---
+        # --- 1. Automod Check (Order is crucial for security) ---
         
         is_bypassed = member.id in self.bot.bypass_users.get(guild.id, [])
-        is_deleted = False # Initialize is_deleted outside of the check
+        is_deleted = False 
         
         if not is_bypassed and self.bot.automod_enabled.get(guild.id, True):
              # Run the strict automod logic
              is_deleted = await self.process_automod(message)
              if is_deleted:
-                 return # Stop processing commands, XP, or LLM if message was deleted
+                 return # Stop all further processing if the message was deleted
         
-        # --- 2. Ping and Role Response Check ---
+        # --- 2. Ping Response Check ---
         
         is_bot_pinged = self.bot.user in message.mentions
         if is_bot_pinged:
@@ -214,7 +224,7 @@ class GeneralFeatures(commands.Cog):
             response = random.choice(self.ping_messages)
             embed = Embed(description=response, color=discord.Color.teal())
             await message.channel.send(f"{message.author.mention}", embed=embed)
-            # Do NOT return here, continue to check XP and process command/LLM
+            # Continue to check XP and process command/LLM
         
         # Check for any of the bot's owned roles being mentioned
         bot_member = message.guild.get_member(self.bot.user.id)
@@ -225,7 +235,7 @@ class GeneralFeatures(commands.Cog):
                     embed = Embed(description=response, color=discord.Color.light_grey())
                     # Send a subtle acknowledgement, deleting after a short time
                     await message.channel.send(embed=embed, delete_after=10)
-                    # Do NOT return here, continue to check XP and process command/LLM
+                    # Continue to check XP and process command/LLM
 
         # --- 3. Command and XP Granting ---
         # Process any standard or slash commands first
@@ -239,39 +249,35 @@ class GeneralFeatures(commands.Cog):
             if new_level is not None:
                 await self.bot.send_level_up_message(member, new_level)
 
-            # --- 4. Gemini API Response (Answering questions even if not pinged) ---
+            # --- 4. Gemini API Response (Answering questions anywhere) ---
             # If auto-speaking is enabled, and the message wasn't a command/deleted, see if it's a question for the LLM.
-            if self.autospeak_enabled.get(guild.id, False):
-                 # Only respond if the message is in the designated channel (if set) or no channel is set
+            if self.autospeak_enabled.get(guild.id, False) or is_bot_pinged:
+                
                 designated_channel_id = self.llm_channel_id.get(guild.id)
-                if designated_channel_id is None or designated_channel_id == message.channel.id:
+                
+                # If a designated channel is set, only respond there (unless pinged)
+                if designated_channel_id is None or designated_channel_id == message.channel.id or is_bot_pinged:
                     await self.process_llm_response(message)
 
 
     async def process_llm_response(self, message):
         """
-        Processes non-command, non-pinged messages to check if they are questions 
-        that Lagoona can answer using the Gemini API and Studio context.
+        Processes messages using the Gemini API, ensuring Lagoona answers questions 
+        even if not pinged (if auto-speak is enabled).
         """
         
-        # Simple heuristic to determine if it's a question worth answering
+        # Use a more relaxed heuristic now that we have /autospeak control
         content = message.content.strip()
-        # Make the question detection more flexible to cover general statements as well
         is_a_potential_query = len(content) >= 15 and not content.startswith(('http', 'www', 'discord.gg'))
         
-        if not is_a_potential_query:
-            return # Not a significant query
-            
-        # Add a check to prevent responding too often
-        # This is a very simple rate limit: only respond to 1 out of every 5 non-pinged LLM queries
-        # if random.randint(1, 5) != 1 and self.bot.user not in message.mentions:
-        #     return
+        # If the bot was pinged, we should always try to respond unless the message is trivial
+        if self.bot.user not in message.mentions and not is_a_potential_query:
+            return # Ignore non-pinged, non-substantive messages
             
         # Set up a brief "typing" indicator to show the bot is thinking
         async with message.channel.typing():
             try:
                 # Call the external method (assumed to be on the bot object) which uses the Gemini API
-                # Pass the studio context for grounding the response.
                 response_text = await self.bot.call_gemini_api(
                     prompt=content,
                     studio_context=self.studio_context
@@ -290,19 +296,20 @@ class GeneralFeatures(commands.Cog):
                 print(f"Gemini API call failed for message '{content[:30]}...': {e}")
                 
     async def process_automod(self, message):
-        """Strictly processes messages against SG/Discord/Roblox rules, including mass pings, raids, and bad content."""
+        """
+        Strictly processes messages against SG/Discord/Roblox rules, including mass pings, 
+        raids, alternate accounts, swear words, and bad content.
+        """
         guild = message.guild
         member = message.author
         content = message.content.lower()
         deleted = False
         
-        # Check if the member is a newly joined user (heuristic for alt/raider)
+        # Heuristic for new account/alt account (joined within the last 5 minutes)
         is_new_member = (datetime.now(self.bot.AST_TIMEZONE) - member.joined_at) < timedelta(minutes=5)
 
-        # 1. Bad words / Swear words / Bad Content check
+        # 1. Bad words / Swear words / Bad Content / Invite Link check
         is_bad_content = any(word in content for word in self.bot.SG_RULES['BAD_WORDS'])
-
-        # Check for Discord invite links (preventing server poaching)
         has_invite_link = any(invite in content for invite in ['discord.gg/', 'discordapp.com/invite/', 'dsc.gg/'])
         
         if is_bad_content or has_invite_link:
@@ -313,21 +320,25 @@ class GeneralFeatures(commands.Cog):
                 pass
             
             mute_time = timedelta(minutes=30)
-            reason = "AUTOMOD: Use of inappropriate language/content or unauthorized invite links (SG/Discord/Roblox Rule Violation)."
+            reason = "AUTOMOD: Use of inappropriate content or unauthorized invite links (SG/Discord/Roblox Rule Violation)."
             
             try:
+                # Timeout member (Discord term for temporary mute)
                 await member.timeout(mute_time, reason=reason)
-                log_embed = Embed(title="🔇 User Muted (Bad Content/Invite)", description=f"**User:** {member.mention}\n**Action:** 30 Minute Timeout\n**Reason:** {reason}\n**Channel:** {message.channel.mention}\n**Message Snippet:** `{message.content[:50]}...`", color=discord.Color.orange())
-                await member.send(f"You have been automatically muted in **{guild.name}** for 30 minutes due to rule-breaking content or sharing unauthorized invite links. Please review the rules.", silent=True)
+                log_embed = Embed(title="🔇 User Muted (Bad Content/Invite)", description=f"**User:** {member.mention}\n**Action:** 30 Minute Timeout\n**Reason:** {reason}\n**Channel:** {message.channel.mention}", color=discord.Color.orange())
+                await member.send(f"You have been automatically muted in **{guild.name}** for 30 minutes due to rule-breaking content. Please review the rules.", silent=True)
                 await self.bot.log_event(guild, log_embed, 'mod')
             except discord.errors.Forbidden:
                 print("Lacking permissions to mute user.")
             return deleted
 
-        # 2. Raiding / Massive Ping / New Account Check
+        # 2. Raiding / Massive Ping / Spam Detection
         is_mass_ping = len(message.mentions) >= self.bot.SG_RULES['MASS_MENTION_THRESHOLD'] and len(message.content) < 100
         
-        if is_mass_ping or (is_new_member and len(message.content) > 100): # Aggressive spam detection for new accounts
+        # Aggressive check: mass ping OR (new member spamming long messages)
+        is_spamming = is_mass_ping or (is_new_member and len(message.content) > 100 and message.channel.last_message.author != member)
+        
+        if is_spamming:
             
             ban_reason = "AUTOMOD: Instant Ban - Attempted server raiding/mass mention spam or suspected alternative account/bot spam."
             
@@ -342,7 +353,6 @@ class GeneralFeatures(commands.Cog):
             # Temporary Server Lockdown
             locked_channels = []
             for channel in guild.channels:
-                # Check for channels the default role can currently send messages in
                 if isinstance(channel, discord.TextChannel) and channel.permissions_for(guild.default_role).send_messages:
                     try:
                         await channel.set_permissions(guild.default_role, send_messages=False, reason="AUTOMOD: Server Lockdown due to raid attempt.")
@@ -359,7 +369,7 @@ class GeneralFeatures(commands.Cog):
             for channel in guild.channels:
                 if isinstance(channel, discord.TextChannel):
                     try:
-                        # Only unlock if the channel was previously locked by this bot
+                        # Only unlock if the channel's default role permissions were set to deny sending
                         default_perms = channel.overwrites_for(guild.default_role)
                         if default_perms.send_messages is False:
                              await channel.set_permissions(guild.default_role, send_messages=True, reason="AUTOMOD: Server Unlock - Raid threat subsided.")
