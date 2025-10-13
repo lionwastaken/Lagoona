@@ -40,14 +40,12 @@ CLIENT_ID = os.getenv('CLIENT_ID')
 # Studio Specific Configs
 ROBLOX_GROUP_ID = 32487083  # Stargame Studio Group ID
 APPEAL_SERVER_LINK = "https://discord.gg/CFWv8fZnyY" # Mock link
-# Authorized users for staff announcements (founder + co-owner)
+# Authorized users for staff announcements (founder + co-owner + head staff)
 FOUNDER_USERNAME = 'lionelclementofficial'
-ANNOUNCEMENT_AUTHORS = ['niamaru87', FOUNDER_USERNAME]
-STARGAME_DOMAINS = ["stargamestudio.com", f"roblox.com/groups/{ROBLOX_GROUP_ID}"] # Added group link
+ANNOUNCEMENT_AUTHORS = ['niamaru87', FOUNDER_USERNAME, 'whiteboard'] # Added Whiteboard
+STARGAME_DOMAINS = ["stargamestudio.com", f"roblox.com/groups/{ROBLOX_GROUP_ID}"]
 
-# Banner Images (Using the uploaded file names as mock URLs)
-# Note: In a production environment, these must be hosted URLs. 
-# We use the placeholder image for the bot to run without external assets.
+# Banner Images (Using the uploaded file names as mock URLs for the two banners)
 BANNER_IMAGES = [
     "https://placehold.co/1200x400/0000FF/FFFFFF?text=SG+Official+Banner+1", # Mock for officialbanner.jpg
     "https://placehold.co/1200x400/2A2D43/FFFFFF?text=SG+Edited+Banner+2"  # Mock for SGStudioBannerEdited.jpg
@@ -56,13 +54,17 @@ BANNER_IMAGES = [
 # The consolidated knowledge base
 STUDIO_KNOWLEDGE = (
     "Stargame Studio is a youth-powered ROBLOX development studio. Motto: Dream it, commission it, we build it... with passion, quality, and heart! "
-    "Creator/Designer of OC Lagoona: Miyah (Instagram: https://www.instagram.com/miyahs.sb/). "
+    "**Lagoona's Creator/Designer: Miyah (Instagram: https://www.instagram.com/miyahs.sb/)** and she created the OC Lagoona. "
     "Vision: To be a beloved creative force, first adored by the ROBLOX community, then the wider gaming/tech world. "
     "Mission: Make a Positive Impact, Listen & Respond, Help & Support, Build a Dream Team Environment, Champion Quality & Entertainment, Educate & Empower, Prioritize Well-being. "
     "Output Focus: Engaging Games (Rampage Royale, Relax Hangout, Veccera Cafe, The Outbreak), Trendsetting Assets (2D clothes, UGC), Informative Content, and a Positive Community Space. "
     "Compensation: Active developers typically receive up to 10,000 Robux per project, plus a 2% revenue split. Flexible payment methods (USD, ROBUX, revenue sharing, gift cards, etc.) are used. "
     "Rules: Be respectful, no harassment, follow directives. "
-    "Key Staff: crystalcat057_24310 (Clothes Designer/Storywriter/Tester), cigerds (Best Lead Artist), lladybug. (Voice Actress), stavrosmichalatos (SFX Composer), midnightangel05_11 (Scripter), rashesmcfluff (Animator), toihou (Modeler), cleonagoesblublub (Next in Lead Artists). "
+    "**Key Staff & Artists:** "
+    "**Head Staff:** Niamaru87, Whiteboard. "
+    "**Other Staff:** Snowy, Kleffy_Gamin. "
+    "**Artists:** polarplatypus, angfry, honeypah, poleyz, Linda. "
+    "**Other Key Staff:** crystalcat057_24310 (Clothes Designer/Storywriter/Tester), cigerds (Best Lead Artist), lladybug. (Voice Actress), stavrosmichalatos (SFX Composer), midnightangel05_11 (Scripter), rashesmcfluff (Animator), toihou (Modeler), cleonagoesblublub (Next in Lead Artists). "
     f"Roblox Group: https://www.roblox.com/communities/{ROBLOX_GROUP_ID}/Stargame-Studio "
 )
 
@@ -212,7 +214,16 @@ async def on_member_join(member):
         channel = member.guild.get_channel(WELCOME_SETTINGS['channel_id'])
         if channel:
             welcome_text = WELCOME_SETTINGS['welcome_message'].replace('{member}', member.mention)
-            await channel.send(welcome_text)
+            
+            # Send the welcome message with a random banner image
+            embed = discord.Embed(
+                title="✨ Welcome to Stargame Studio! ✨",
+                description=welcome_text,
+                color=discord.Color.blue()
+            )
+            embed.set_image(url=random.choice(BANNER_IMAGES))
+            
+            await channel.send(member.mention, embed=embed)
     
     # Initialize user in the level system
     USER_LEVELS[member.id] = USER_LEVELS.get(member.id, {'xp': 0, 'level': 0})
@@ -224,7 +235,17 @@ async def on_member_remove(member):
         channel = member.guild.get_channel(WELCOME_SETTINGS['channel_id'])
         if channel:
             goodbye_text = WELCOME_SETTINGS['goodbye_message'].replace('{member}', member.name)
-            await channel.send(goodbye_text)
+            
+            # Send the goodbye message with a random banner image
+            embed = discord.Embed(
+                title="👋 Goodbye, Star!",
+                description=goodbye_text,
+                color=discord.Color.dark_blue()
+            )
+            embed.set_image(url=random.choice(BANNER_IMAGES))
+            
+            await channel.send(embed=embed)
+
 
 @bot.event
 async def on_message(message):
@@ -238,7 +259,7 @@ async def on_message(message):
             await message.channel.send("👋 **Hello!** Lagoona is activating support for you...")
         
         prompt = message.content
-        dm_context = f"You are Lagoona, the professional and supportive DM customer service agent for Stargame Studio. The appeal server is {APPEAL_SERVER_LINK}."
+        dm_context = f"You are Lagoona, the professional and supportive DM customer service agent for Stargame Studio. The appeal server is {APPEAL_SERVER_LINK}. Remember Miyah created you."
         response_text = await generate_response(prompt, dm_context, message.author.name)
         await message.channel.send(response_text)
         return # Stop processing DMs
@@ -265,7 +286,15 @@ async def on_message(message):
         if new_level > current_level:
             level_channel = bot.get_channel(LEVEL_UP_SETTINGS['channel_id'])
             if level_channel:
-                 await level_channel.send(f"🎉 **LEVEL UP!** {message.author.mention} reached Level **{new_level}**! Keep creating, building, and designing!")
+                 # Send level up message with a random banner image
+                 embed = discord.Embed(
+                     title=f"⭐ LEVEL UP: Level {new_level} Reached! ⭐",
+                     description=f"🎉 **Congratulations** {message.author.mention}! You've reached Level **{new_level}**! Keep creating, building, and designing!",
+                     color=discord.Color.gold()
+                 )
+                 embed.set_image(url=random.choice(BANNER_IMAGES))
+                 
+                 await level_channel.send(embed=embed)
 
 
     # 2. Lagoona Keyword Response
@@ -301,7 +330,15 @@ async def on_reaction_add(reaction, user):
     if new_level > current_level:
         level_channel = bot.get_channel(LEVEL_UP_SETTINGS['channel_id'])
         if level_channel:
-             await level_channel.send(f"🎉 **LEVEL UP!** {user.mention} reached Level **{new_level}** from reacting to a message!")
+             # Send level up message with a random banner image
+             embed = discord.Embed(
+                 title=f"⭐ LEVEL UP: Level {new_level} Reached! ⭐",
+                 description=f"🎉 **Congratulations** {user.mention}! You've reached Level **{new_level}** from reacting to a message!",
+                 color=discord.Color.gold()
+             )
+             embed.set_image(url=random.choice(BANNER_IMAGES))
+             
+             await level_channel.send(embed=embed)
 
 
 # --- TASK SCHEDULERS ---
@@ -334,7 +371,15 @@ async def vc_xp_task():
                 if new_level > current_level:
                     level_channel = bot.get_channel(LEVEL_UP_SETTINGS['channel_id'])
                     if level_channel:
-                         await level_channel.send(f"🎉 **LEVEL UP!** {member.mention} reached Level **{new_level}** for being active in a voice channel!")
+                         # Send level up message with a random banner image
+                         embed = discord.Embed(
+                             title=f"⭐ LEVEL UP: Level {new_level} Reached! ⭐",
+                             description=f"🎉 **Congratulations** {member.mention}! You've reached Level **{new_level}** for being active in a voice channel!",
+                             color=discord.Color.gold()
+                         )
+                         embed.set_image(url=random.choice(BANNER_IMAGES))
+                         
+                         await level_channel.send(embed=embed)
 
 
 @tasks.loop(time=DAILY_POST_SETTINGS['time'])
@@ -365,6 +410,8 @@ async def daily_post_task():
         description=post_content,
         color=discord.Color.purple()
     )
+    # Add a random banner to the daily post
+    embed.set_image(url=random.choice(BANNER_IMAGES)) 
 
     try:
         message = await channel.send("@everyone", embed=embed)
@@ -412,270 +459,4 @@ async def task_reminder_task():
                     setter = discord.utils.get(guild.members, name=task_item['original_setter'])
                     if setter:
                         try:
-                            await setter.send(f"⚠️ **DEADLINE ALERT:** Task '{task_item['task']}' for {member.name} has passed.")
-                        except Exception:
-                            pass
-                
-        if not tasks_list:
-            del TASK_REMINDERS[user_id]
-
-# --- SLASH COMMANDS ---
-
-# --- Level Up System Commands ---
-@bot.tree.command(name="levelup", description="[STAFF ONLY] Set up or disable the level-up system.")
-@discord.app_commands.describe(
-    action="Enable or disable the system.",
-    channel="The channel where level-up notifications are posted."
-)
-async def levelup_command(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("🚫 You must be an administrator to manage the level-up system.", ephemeral=True)
-
-    action = action.lower()
-    if action == 'enable':
-        if not channel:
-            return await interaction.response.send_message("You must specify a channel to enable the feature.", ephemeral=True)
-            
-        LEVEL_UP_SETTINGS['enabled'] = True
-        LEVEL_UP_SETTINGS['channel_id'] = channel.id
-        await interaction.response.send_message(
-            f"✅ Level-up system **enabled** in {channel.mention}. XP gained from messages, reactions, and VC activity.",
-            ephemeral=True
-        )
-    elif action == 'disable':
-        LEVEL_UP_SETTINGS['enabled'] = False
-        LEVEL_UP_SETTINGS['channel_id'] = None
-        await interaction.response.send_message("❌ Level-up system **disabled**.", ephemeral=True)
-    else:
-        await interaction.response.send_message("Invalid action. Use 'enable' or 'disable'.", ephemeral=True)
-
-@bot.tree.command(name="rank", description="Check your current level and XP.")
-async def rank_command(interaction: discord.Interaction, user: discord.Member = None):
-    target = user if user else interaction.user
-    user_data = USER_LEVELS.get(target.id, {'xp': 0, 'level': 0})
-    
-    xp = user_data['xp']
-    level = user_data['level']
-    xp_for_next = (level + 1) ** 2 * 100
-    
-    embed = discord.Embed(
-        title=f"⭐ {target.name}'s Rank ⭐",
-        description=f"Level: **{level}**\nXP: **{xp}**\nNext Level at: **{xp_for_next}** XP",
-        color=discord.Color.gold()
-    )
-    embed.set_footer(text="Keep participating to rank up!")
-    await interaction.response.send_message(embed=embed, ephemeral=False)
-
-# --- Social Media Announcement Command ---
-@bot.tree.command(name="announceforposts", description="[STAFF ONLY] Configure automated social media post announcements.")
-@discord.app_commands.describe(
-    platform="The social media platform.",
-    action="Enable or disable announcements for this platform.",
-    channel="The channel for the announcement.",
-    link="The main profile link for this platform."
-)
-@discord.app_commands.choices(
-    platform=[
-        discord.app_commands.Choice(name="YouTube", value="youtube"),
-        discord.app_commands.Choice(name="Instagram", value="instagram"),
-        discord.app_commands.Choice(name="Twitter", value="twitter"),
-        discord.app_commands.Choice(name="TikTok", value="tiktok"),
-        discord.app_commands.Choice(name="All", value="all"),
-    ],
-    action=[
-        discord.app_commands.Choice(name="Enable", value="enable"),
-        discord.app_commands.Choice(name="Disable", value="disable"),
-    ]
-)
-async def announce_for_posts_command(interaction: discord.Interaction, platform: str, action: str, channel: discord.TextChannel = None, link: str = None):
-    if not is_authorized(interaction.user.name):
-        return await interaction.response.send_message("🚫 Only authorized staff can set up post announcements.", ephemeral=True)
-
-    platforms = [platform] if platform != 'all' else ['youtube', 'instagram', 'twitter', 'tiktok']
-    
-    if action == 'enable' and (not channel or not link):
-        return await interaction.response.send_message(
-            "❌ To enable, you must specify a **channel** and a **profile link**.", 
-            ephemeral=True
-        )
-
-    for p in platforms:
-        if action == 'enable':
-            ANNOUNCE_POST_SETTINGS['platform_settings'][p] = {
-                'channel_id': channel.id,
-                'enabled': True,
-                'link': link
-            }
-        elif action == 'disable':
-            if p in ANNOUNCE_POST_SETTINGS['platform_settings']:
-                ANNOUNCE_POST_SETTINGS['platform_settings'][p]['enabled'] = False
-
-    message = f"✅ Post announcements for **{platform.upper()}** have been **{action.upper()}D**."
-    if action == 'enable' and channel:
-         message += f" (Channel: {channel.mention}, Link: {link})"
-         
-    await interaction.response.send_message(message, ephemeral=True)
-
-
-# --- Re-added Core Commands ---
-
-@bot.tree.command(name="help", description="Get a list of commands and general studio assistance.")
-async def help_command(interaction: discord.Interaction, topic: str = None):
-    """Provides a dynamic help response using the Gemini API."""
-    
-    if topic:
-        prompt = f"The user is asking for help on the topic: '{topic}'. Use the provided studio knowledge to give a detailed, helpful answer."
-    else:
-        prompt = "The user is asking for general help. Provide a welcoming overview of Stargame Studio, list the main slash commands for support, and tell them about the 'LAGOONA' keyword feature."
-
-    context = STUDIO_KNOWLEDGE + (
-        "\n\n**Main Commands:** /announcement, /settask, /ticket, /verify, /set_welcome_goodbye, /levelup, /announceforposts. "
-        "Also, the bot responds to the keyword 'LAGOONA' for quick questions."
-    )
-    
-    response_text = await generate_response(prompt, context, interaction.user.name)
-    await interaction.response.send_message(response_text, ephemeral=False)
-
-@bot.tree.command(name="ticket", description="Create a private ticket thread for staff support/appeals.")
-@discord.app_commands.describe(issue="Brief description of the issue or appeal.")
-async def ticket_command(interaction: discord.Interaction, issue: str):
-    """Creates a private thread for a user to discuss an issue with staff."""
-    
-    start_message = (
-        f"**New Support Ticket for {interaction.user.mention}**\n\n"
-        f"**Issue:** {issue}\n\n"
-        f"A staff member will be with you shortly. If this is an appeal, please provide relevant context and evidence."
-    )
-
-    try:
-        # Create a private thread in the channel where the command was used
-        thread = await interaction.channel.create_thread(
-            name=f"Ticket-{interaction.user.name}-{random.randint(100, 999)}",
-            type=discord.ChannelType.private_thread,
-            reason="User initiated support ticket"
-        )
-        await thread.send(start_message)
-        
-        await interaction.response.send_message(
-            f"✅ Your support ticket has been opened! Please head to **{thread.mention}** to continue your discussion privately with staff.",
-            ephemeral=True
-        )
-
-    except discord.Forbidden:
-        await interaction.response.send_message(
-            "❌ I do not have permission to create threads in this channel. Please ask an admin to check my permissions.",
-            ephemeral=True
-        )
-
-@bot.tree.command(name="verify", description="Verify your Roblox account membership in the Stargame Studio Group.")
-async def verify_command(interaction: discord.Interaction):
-    """Initiates a mock Roblox verification process."""
-    
-    response_text = (
-        f"🔗 **Roblox Verification Initiated for {interaction.user.name}**\n\n"
-        "To verify your identity and link your Roblox account, please follow these steps:\n"
-        f"1. **Join the official Stargame Studio Group:** (Group ID: `{ROBLOX_GROUP_ID}`).\n"
-        "2. **DM a specific verification code** to me (Lagoona) from your Roblox account bio/status (this step is mocked).\n\n"
-        f"Roblox Group Link: https://www.roblox.com/communities/{ROBLOX_GROUP_ID}/Stargame-Studio#!/about"
-    )
-    
-    await interaction.response.send_message(response_text, ephemeral=True)
-
-@bot.tree.command(name="setdailyposts", description="[STAFF ONLY] Set the channel and time for the daily quote/question post.")
-@discord.app_commands.describe(
-    channel="The channel for daily posts.",
-    utc_time="The time for the post (HH:MM UTC format, e.g., 10:00)."
-)
-async def set_daily_posts_command(interaction: discord.Interaction, channel: discord.TextChannel, utc_time: str):
-    """Configures the daily scheduled post."""
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("🚫 You must be an administrator to set up daily posts.", ephemeral=True)
-
-    try:
-        hour, minute = map(int, utc_time.split(':'))
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError
-            
-        new_time = time(hour=hour, minute=minute)
-        DAILY_POST_SETTINGS['channel_id'] = channel.id
-        DAILY_POST_SETTINGS['time'] = new_time
-
-        daily_post_task.restart()
-
-        await interaction.response.send_message(
-            f"✅ Daily quote/question post set for {channel.mention} at **{utc_time} UTC**.",
-            ephemeral=True
-        )
-    except ValueError:
-        await interaction.response.send_message(
-            "❌ Invalid time format. Please use **HH:MM** (24-hour UTC time, e.g., 08:30).",
-            ephemeral=True
-        )
-
-
-# --- Task Management Commands (Same as previous, omitted for brevity but remain in script) ---
-# ... /settask, /completetask, /extendedtask, /incompletetask, /forwardedtask ...
-
-# --- Founder Only Commands ---
-
-@bot.tree.command(name="announcement", description="Post a staff announcement with custom title and reactions.")
-@discord.app_commands.describe(
-    title="The banner title for the announcement.",
-    message="The main message content for the announcement.",
-    image_url="Optional: URL of an image for the banner. Leave empty for a random Stargame banner."
-)
-async def announcement_command(interaction: discord.Interaction, title: str, message: str, image_url: str = None):
-    """Allows only authorized users to post an announcement with customization."""
-    author_username = interaction.user.name 
-
-    if is_authorized(author_username):
-        
-        # Determine footer and image
-        footer_text = "Authorized Message by lionelclementofficial" if is_founder(author_username) else "Authorized Message by Stargame Studio Staff"
-        
-        # Select one of the two banner images randomly if none is provided
-        final_image_url = image_url if image_url else random.choice(BANNER_IMAGES)
-        
-        embed = discord.Embed(
-            title=f"📣 {title}",
-            description=message,
-            color=discord.Color.blue()
-        )
-        embed.set_image(url=final_image_url)
-        embed.set_footer(text=footer_text)
-        
-        await interaction.response.send_message("Announcement pending! Posting now...", ephemeral=True) 
-        
-        # Check for role pings and add the actual role mention if specified
-        ping_content = ""
-        if "@everyone" in message.lower():
-            ping_content += "@everyone "
-        # Add logic to find and ping other roles if mentioned (e.g., @community member)
-
-        public_message = await interaction.channel.send(ping_content, embed=embed) 
-
-        # Add reactions
-        await add_announcement_reactions(public_message)
-    else:
-        await interaction.response.send_message(
-            f"🚫 Access Denied. Only authorized staff ({', '.join(ANNOUNCEMENT_AUTHORS)}) can use this command.",
-            ephemeral=True
-        )
-
-# ... /set_welcome_goodbye ...
-# ... /revampallusernames ...
-# ... /verifyallmembers ...
-
-# --- START THE BOT ---
-if __name__ == "__main__":
-    if not DISCORD_TOKEN or not GEMINI_API_KEY or not CLIENT_ID:
-        print("\n--- CRITICAL ERROR: REQUIRED ENVIRONMENT VARIABLES MISSING ---")
-        print("Please ensure DISCORD_TOKEN, GEMINI_API_KEY, and CLIENT_ID are set.")
-    else:
-        # Start the web server in a separate thread to keep Render happy
-        web_server_thread = threading.Thread(target=run_web_server)
-        web_server_thread.daemon = True 
-        web_server_thread.start()
-        
-        # Run the Discord bot
-        bot.run(DISCORD_TOKEN)
+                            await setter.send(f"⚠️ **DEADLINE ALERT:** Task '{task
