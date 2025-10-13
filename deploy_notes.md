@@ -1,0 +1,2 @@
+- Ensure static images are placed in /static/banners before starting.
+- Set STATIC_BASE_URL to https://lagoona-0kc2.onrender.com/static/banners to allow embed URLs.
