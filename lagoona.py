@@ -51,36 +51,39 @@ class LagoonaBot(commands.Bot):
         self.ready_event.set()
 
 def start_background_webserver():
-    # Runs aiohttp web server in thread
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting webserver on port {port} (threaded).")
-    start_webserver(port=port)
+    try:
+        port = int(os.environ.get("PORT", 8080))
+        logger.info(f"Starting Lagoona webserver on port {port} (threaded)")
+        start_webserver(port=port)
+    except Exception as e:
+        logger.exception("Webserver crashed: %s", e)
 
 def main():
-    # Start webserver on separate thread so it doesn't block asyncio loop
-    web_thread = threading.Thread(target=start_background_webserver, daemon=True)
-    web_thread.start()
+    try:
+        web_thread = threading.Thread(target=start_background_webserver, daemon=True)
+        web_thread.start()
 
-    bot = LagoonaBot()
+        bot = LagoonaBot()
 
-    # Optional: schedule background tasks once bot is ready
-    async def start_tasks():
-        await bot.wait_until_ready()
-        # Example: start a background loop inside the announcements cog
-        try:
+        async def start_tasks():
+            await bot.wait_until_ready()
             cog = bot.get_cog("AnnouncementsCog")
             if cog and hasattr(cog, "daily_post_loop"):
                 cog.daily_post_loop.start()
-        except Exception as e:
-            logger.exception("Failed to start cog loops: %s", e)
+
+        bot.loop.create_task(start_tasks())
+
+        token = os.environ.get("DISCORD_TOKEN")
+        if not token:
+            logger.error("DISCORD_TOKEN not set in environment.")
+            return
+
+        bot.run(token)
+    except Exception as e:
+        logger.exception("Lagoona crashed during startup: %s", e)
+
 
     bot.loop.create_task(start_tasks())
-
-    token = os.environ.get("DISCORD_TOKEN")
-    if not token:
-        logger.error("DISCORD_TOKEN not set in environment.")
-        return
-
     bot.run(token)
 
 if __name__ == "__main__":
