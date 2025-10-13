@@ -1,733 +1,944 @@
 import discord
-from discord import app_commands, Embed, File
 from discord.ext import commands, tasks
-from datetime import datetime, time, timedelta
-import random
-import asyncio
+import aiohttp
 import os
+import asyncio
+import random
+from datetime import time, datetime, timedelta
+from dotenv import load_dotenv
+import threading 
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 import json
-import pytz
 
-# --- Configuration and Constants ---
+# --- Render/Uptime Fix: Simple Web Server ---
 
-# You need to manually replace these with your actual file paths for the banners.
-# The bot MUST have access to these files in its working directory.
-BANNER_PATHS = [
-    'officialbanner.jpg',
-    'SGStudioBannerEdited.jpg'
+class HealthCheckHandler(SimpleHTTPRequestHandler):
+    """A minimal handler for a health check."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"Bot is running (Web server placeholder active).")
+
+def run_web_server():
+    """Starts the web server on the port specified by Render or default 8080."""
+    port = int(os.environ.get("PORT", 8080))
+    server_address = ('0.0.0.0', port)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    print(f"Starting web server on port {port} for Render health check...")
+    httpd.serve_forever()
+# -----------------------------------------------
+
+# Load environment variables
+load_dotenv()
+
+# --- CONFIGURATION & KNOWLEDGE BASE ---
+DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+CLIENT_ID = os.getenv('CLIENT_ID') 
+
+# Studio Specific Configs
+ROBLOX_GROUP_ID = 32487083  # Stargame Studio Group ID
+APPEAL_SERVER_LINK = "https://discord.gg/CFWv8fZnyY" # Mock link
+# Authorized users for staff announcements (founder + co-owner + head staff)
+FOUNDER_USERNAME = 'lionelclementofficial'
+ANNOUNCEMENT_AUTHORS = ['niamaru87', FOUNDER_USERNAME, 'whiteboard'] # Added Whiteboard
+STARGAME_DOMAINS = ["stargamestudio.com", f"roblox.com/groups/{ROBLOX_GROUP_ID}"]
+
+# Banner Images (Using the uploaded file names as mock URLs for the two banners)
+BANNER_IMAGES = [
+    "https://placehold.co/1200x400/0000FF/FFFFFF?text=SG+Official+Banner+1", # Mock for officialbanner.jpg
+    "https://placehold.co/1200x400/2A2D43/FFFFFF?text=SG+Edited+Banner+2"  # Mock for SGStudioBannerEdited.jpg
 ]
 
-# StarGame Studio and Roblox Rule Set (Used by Automod)
-SG_RULES = {
-    "STUDIO_POLICY": [
-        "Be respectful to everyone, do not harass others, publicly nor privately.",
-        "Do not humiliate, intend harm, nor be explicitly inappropriate.",
-        "Be respectful in your tone, treat others the way you want to be treated fairly and nicely.",
-        "Submitting purely AI-generated artwork as original content is unacceptable.",
-        "Do not engage in external payments (USD, Giftcards, Nitro) unless specifically agreed upon for commissions outside of core studio compensation.",
-        "Developers working on projects will receive a 2% revenue split and credits."
-    ],
-    "DISCORD_TOS": [
-        "No illegal content or conduct.",
-        "No hateful conduct or harassment.",
-        "No impersonation or fraudulent behavior.",
-        "No promoting self-harm or violence.",
-        "No spamming, raiding, or automated client usage (bots not explicitly permitted)."
-    ],
-    "ROBLOX_TOS": [
-        "Do not share personal identifying information (PII).",
-        "No dating or soliciting explicit content.",
-        "No bullying, harassment, or hate speech.",
-        "No inappropriate or illegal content.",
-        "Do not exploit, cheat, or abuse platform features."
-    ]
+# The consolidated knowledge base
+STUDIO_KNOWLEDGE = (
+    "Stargame Studio is a youth-powered ROBLOX development studio. Motto: Dream it, commission it, we build it... with passion, quality, and heart! "
+    "**Lagoona's Creator/Designer: Miyah (Instagram: https://www.instagram.com/miyahs.sb/)** and she created the OC Lagoona. "
+    "Vision: To be a beloved creative force, first adored by the ROBLOX community, then the wider gaming/tech world. "
+    "Mission: Make a Positive Impact, Listen & Respond, Help & Support, Build a Dream Team Environment, Champion Quality & Entertainment, Educate & Empower, Prioritize Well-being. "
+    "Output Focus: Engaging Games (Rampage Royale, Relax Hangout, Veccera Cafe, The Outbreak), Trendsetting Assets (2D clothes, UGC), Informative Content, and a Positive Community Space. "
+    "Compensation: Active developers typically receive up to 10,000 Robux per project, plus a 2% revenue split. Flexible payment methods (USD, ROBUX, revenue sharing, gift cards, etc.) are used. "
+    "Rules: Be respectful, no harassment, follow directives. "
+    "**Key Staff & Artists:** "
+    "**Head Staff:** Niamaru87, Whiteboard. "
+    "**Other Staff:** Snowy, Kleffy_Gamin. "
+    "**Artists:** polarplatypus, angfry, honeypah, poleyz, Linda. "
+    "**Other Key Staff:** crystalcat057_24310 (Clothes Designer/Storywriter/Tester), cigerds (Best Lead Artist), lladybug. (Voice Actress), stavrosmichalatos (SFX Composer), midnightangel05_11 (Scripter), rashesmcfluff (Animator), toihou (Modeler), cleonagoesblublub (Next in Lead Artists). "
+    f"Roblox Group: https://www.roblox.com/communities/{ROBLOX_GROUP_ID}/Stargame-Studio "
+)
+
+# Bot State Management (Non-persistent)
+MOD_STRIKES = {}          
+DOUBLE_COUNTER = {}       
+TASK_REMINDERS = {}       
+WELCOME_SETTINGS = {
+    'enabled': False,
+    'channel_id': None,
+    'welcome_message': "Welcome {member}, dream it, commission it, we build it! Use /help if you need assistance.",
+    'goodbye_message': "Goodbye {member}, we hope to see you again soon!"
 }
 
-# Time zone for scheduled tasks (AST = Atlantic Standard Time)
-AST_TIMEZONE = pytz.timezone('America/Puerto_Rico') # Puerto Rico observes AST/ADT which matches the user's requirement for AST
+DAILY_POST_SETTINGS = {
+    'channel_id': None,
+    'time': time(hour=10, minute=0) # 10:00 AM UTC default
+}
 
-# Bot Class and Initialization
-class LagoonaBot(commands.Bot):
-    def __init__(self):
-        # Intents needed for all new features
-        intents = discord.Intents.default()
-        intents.members = True # Required for logging, invites, and XP
-        intents.message_content = True # Required for Automod
-        intents.invites = True # Required for invite tracker
-        intents.guilds = True # Required for channel logs and general server info
+ANNOUNCE_POST_SETTINGS = {
+    'platform_settings': {} # {platform: {channel_id: int, enabled: bool, link: str}}
+}
 
-        super().__init__(command_prefix='!', intents=intents)
-        
-        # New Feature Storage
-        self.log_channels = {} # {guild_id: log_channel_id}
-        self.mod_logs_enabled = {} # {guild_id: bool}
-        self.server_logs_enabled = {} # {guild_id: bool}
-        self.xp_data = {} # {user_id: xp}
-        self.guild_invites = {} # {guild_id: {code: uses}}
-        self.application_questions = {} # {guild_id: [question1, ...]}
-        self.scheduled_announcements = [] # List of scheduled announcements
+LEVEL_UP_SETTINGS = {
+    'enabled': False,
+    'channel_id': None,
+    'xp_per_message': 15,
+    'xp_per_reaction': 5,
+    'xp_per_vc_minute': 10
+}
 
-        # Original Support Bot Features Storage
-        self.welcome_goodbye_config = {} # {guild_id: {channel_id: int, type: str, message: str}}
-        self.daily_posts_config = {} # {guild_id: {channel_id: int, role_id: int, time_ast: str}}
+USER_LEVELS = {} # {user_id: {'xp': int, 'level': int}}
 
-        # Founder ID (Critical for /schedule command)
-        self.owner_id = 123456789012345678 # Placeholder: Replace with LionelClementOfficial's Discord User ID
+# XP Utility function
+def get_level_for_xp(xp):
+    """Calculates level based on XP (simple progression: Level = floor(sqrt(XP / 100)))"""
+    return int((xp / 100) ** 0.5)
 
-    async def setup_hook(self):
-        # Load data from a persistent storage mechanism (mocked with JSON files here)
-        await self.load_data()
-        
-        # Sync application commands (slash commands)
-        await self.tree.sync()
-        print("Application commands synced.")
+# --- BOT SETUP ---
+intents = discord.Intents.default()
+intents.message_content = True 
+intents.members = True 
+intents.guilds = True
+intents.voice_states = True # Required for VC activity tracking
+intents.typing = False 
 
-        # Start background tasks
-        self.save_data.start()
-        self.xp_leaderboard_post.start()
-        self.check_scheduled_announcements.start()
-        self.check_daily_posts.start()
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-    # --- Data Persistence (Mocked with JSON files) ---
+# --- GEMINI API FUNCTION ---
 
-    async def load_data(self):
+async def generate_response(prompt: str, context: str, user: str = None):
+    """Generates a text response using the Gemini API, combining context and prompt."""
+    if not GEMINI_API_KEY:
+        return "Error: Gemini API key not configured."
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key={GEMINI_API_KEY}"
+
+    system_instruction = (
+        f"You are Lagoona, the official, friendly, and expert support agent for 'Stargame Studio'. "
+        f"Your response must be welcoming and interactive. Always try to be helpful and concise. "
+        f"Context for Stargame Studio: {context}"
+    )
+    
+    full_prompt = (
+        f"User ({user}) message/query: '{prompt}'. "
+        "Please respond in a friendly, interactive, and enthusiastic tone. "
+        "Acknowledge the user and then answer the question or offer assistance based on the provided context."
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": full_prompt}]}],
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+    }
+    
+    # Simple retry logic with exponential backoff
+    async with aiohttp.ClientSession() as session:
+        for i in range(3): 
+            try:
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'Oops! Lagoona is having a little trouble finding the exact answer right now. Could you rephrase your question?')
+                        return text
+                    elif response.status == 429:
+                        await asyncio.sleep(2 ** i)
+                        continue
+                    else:
+                        error_details = await response.text()
+                        print(f"Gemini API Non-200 Error: {response.status} - {error_details}")
+                        return f"API Error: Lagoona's connection is down (Status: {response.status})."
+            except Exception as e:
+                print(f"Gemini API Request Failed (Attempt {i+1}): {e}")
+                await asyncio.sleep(2 ** i)
+                continue
+        return "Lagoona is too busy right now. Please try again later."
+
+
+# --- HELPER FUNCTIONS ---
+
+def is_authorized(username: str) -> bool:
+    """Checks if a username is in the authorized list (case-insensitive)."""
+    return username.lower() in [name.lower() for name in ANNOUNCEMENT_AUTHORS]
+
+def is_founder(username: str) -> bool:
+    """Checks if the user is the founder."""
+    return username.lower() == FOUNDER_USERNAME.lower()
+
+async def add_announcement_reactions(message: discord.Message):
+    """Adds the required reactions to an announcement message."""
+    try:
+        await message.add_reaction('💛') # :yellow_heart:
+        await message.add_reaction('⭐') # :star:
+        await message.add_reaction('🙌') # Mock for :yah:
+    except Exception as e:
+        print(f"Failed to add reactions: {e}")
+
+# --- BOT EVENTS ---
+
+@bot.event
+async def on_ready():
+    """Confirms the bot is logged in and starts scheduled tasks."""
+    print(f'Logged in as {bot.user.name} ({bot.user.id})')
+    
+    if CLIENT_ID:
         try:
-            with open('bot_data.json', 'r') as f:
-                data = json.load(f)
-                # Load all configs
-                self.log_channels = {int(k): v for k, v in data.get('log_channels', {}).items()}
-                self.mod_logs_enabled = {int(k): v for k, v in data.get('mod_logs_enabled', {}).items()}
-                self.server_logs_enabled = {int(k): v for k, v in data.get('server_logs_enabled', {}).items()}
-                self.xp_data = {int(k): v for k, v in data.get('xp_data', {}).items()}
-                self.welcome_goodbye_config = {int(k): v for k, v in data.get('welcome_goodbye_config', {}).items()}
-                self.application_questions = {int(k): v for k, v in data.get('application_questions', {}).items()}
-                self.scheduled_announcements = data.get('scheduled_announcements', [])
-                self.daily_posts_config = {int(k): v for k, v in data.get('daily_posts_config', {}).items()}
-                print("Data loaded successfully.")
-        except FileNotFoundError:
-            print("bot_data.json not found. Starting with empty data.")
+            # Syncing global commands
+            await bot.tree.sync()
+            print("Synced application commands globally. Please allow a few minutes for Discord to update the list.")
         except Exception as e:
-            print(f"Error loading data: {e}")
-
-    @tasks.loop(minutes=5)
-    async def save_data(self):
-        # Convert keys to strings for JSON serialization
-        data = {
-            'log_channels': {str(k): v for k, v in self.log_channels.items()},
-            'mod_logs_enabled': {str(k): v for k, v in self.mod_logs_enabled.items()},
-            'server_logs_enabled': {str(k): v for k, v in self.server_logs_enabled.items()},
-            'xp_data': {str(k): v for k, v in self.xp_data.items()},
-            'welcome_goodbye_config': {str(k): v for k, v in self.welcome_goodbye_config.items()},
-            'application_questions': {str(k): v for k, v in self.application_questions.items()},
-            'scheduled_announcements': self.scheduled_announcements,
-            'daily_posts_config': {str(k): v for k, v in self.daily_posts_config.items()}
-        }
-        try:
-            with open('bot_data.json', 'w') as f:
-                json.dump(data, f, indent=4)
-            # print(f"Data saved at {datetime.now()}") # Commented out to reduce console spam
-        except Exception as e:
-            print(f"Error saving data: {e}")
-
-    # --- Utility Functions ---
-
-    def get_random_banner(self):
-        """Returns a random banner file object and its name."""
-        try:
-            banner_name = random.choice(BANNER_PATHS)
-            return File(banner_name), banner_name
-        except Exception as e:
-            print(f"Error loading banner file: {e}")
-            return None, None
-
-    async def get_log_channel(self, guild_id):
-        """Retrieves the log channel object for a given guild."""
-        channel_id = self.log_channels.get(guild_id)
-        if channel_id:
-            return self.get_channel(channel_id)
-        return None
-
-    def get_user_xp_level(self, user_id):
-        """Calculates level and required XP for the next level."""
-        xp = self.xp_data.get(user_id, 0)
-        level = int((xp / 100) ** 0.5)
-        xp_needed = (level + 1) ** 2 * 100
-        return xp, level, xp_needed
-
-    def add_xp(self, user_id, guild_id, amount):
-        """Adds XP to a user and returns True if they leveled up."""
-        current_xp, current_level, _ = self.get_user_xp_level(user_id)
-        new_xp = current_xp + amount
-        self.xp_data[user_id] = new_xp
-        new_level = int((new_xp / 100) ** 0.5)
-
-        if new_level > current_level:
-            return new_level
-        return None
-
-    async def log_event(self, guild, embed, log_type):
-        """Sends an embed to the log channel based on the log type."""
-        log_channel = await self.get_log_channel(guild.id)
-        if not log_channel:
-            return
-
-        # Ensure invite/app logs (log_type='app_invite') are treated as server logs
-        is_server_log = log_type == 'server' or log_type == 'app_invite' 
-
-        if log_type == 'mod' and self.mod_logs_enabled.get(guild.id, False):
-            await log_channel.send(embed=embed)
-        elif is_server_log and self.server_logs_enabled.get(guild.id, False):
-            await log_channel.send(embed=embed)
-        # Note: 'app_invite' logs will only appear if 'server' logs are enabled.
-
-
-    # --- Events ---
-
-    async def on_ready(self):
-        print(f'Logged in as {self.user} (ID: {self.user.id})')
-        print('Bot is ready.')
-
-        # Initialize invite cache for all guilds
-        for guild in self.guilds:
-            try:
-                self.guild_invites[guild.id] = {invite.code: invite.uses for invite in await guild.invites()}
-            except discord.errors.Forbidden:
-                print(f"Lacking 'Manage Server' permission to read invites in {guild.name}")
-        
-        # Set the correct owner ID for the founder check
-        self.owner_id = self.owner_id # Placeholder, set this manually if needed
-
-    async def on_member_join(self, member):
-        guild = member.guild
-
-        # 1. Invite Tracker (Log who invited whom)
-        if guild.id in self.guild_invites:
-            try:
-                invites_after_join = await guild.invites()
-                new_invite = None
-                old_invites = self.guild_invites[guild.id]
-                
-                # Find the invite that increased in uses
-                for invite in invites_after_join:
-                    if invite.uses > old_invites.get(invite.code, 0):
-                        new_invite = invite
-                        break
-                
-                # Update the cache
-                self.guild_invites[guild.id] = {invite.code: invite.uses for invite in invites_after_join}
-
-                invite_message = "I couldn't track who invited this member."
-                if new_invite and new_invite.inviter:
-                    invite_message = f"**Invited By:** {new_invite.inviter.mention} (`{new_invite.inviter.name}`)\n**Invite Code:** `{new_invite.code}` (Uses: `{new_invite.uses}`)"
-                
-                # Log the invite event
-                invite_embed = Embed(
-                    title="👤 Member Joined and Invite Tracked",
-                    description=f"{member.mention} has joined the server.",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.now(pytz.utc)
-                )
-                invite_embed.add_field(name="Details", value=invite_message, inline=False)
-                invite_embed.set_footer(text=f"User ID: {member.id}")
-                await self.log_event(guild, invite_embed, 'app_invite') # Logs as part of server logs
-
-            except discord.errors.Forbidden:
-                print(f"Cannot track invites in {guild.name}. Missing 'Manage Server' permission.")
-        
-        # 2. Welcome Message (/setwelcomegoodbye feature)
-        config = self.welcome_goodbye_config.get(guild.id, {})
-        if config.get('type') == 'welcome':
-            channel = self.get_channel(config.get('channel_id'))
-            if channel:
-                # Use a random banner for the welcome message
-                file, filename = self.get_random_banner()
-                embed = Embed(
-                    title=f"WELCOME TO STARGAME STUDIO, {member.name}!",
-                    description=config.get('message', 'Hope you enjoy your stay!'),
-                    color=discord.Color.from_rgb(10, 10, 50)
-                )
-                embed.set_image(url=f"attachment://{filename}")
-                await channel.send(member.mention, embed=embed, file=file)
-
-    async def on_member_remove(self, member):
-        guild = member.guild
-        
-        # 1. Goodbye Message (/setwelcomegoodbye feature)
-        config = self.welcome_goodbye_config.get(guild.id, {})
-        if config.get('type') == 'goodbye':
-            channel = self.get_channel(config.get('channel_id'))
-            if channel:
-                # Use a random banner for the goodbye message
-                file, filename = self.get_random_banner()
-                embed = Embed(
-                    title=f"GOODBYE, {member.name}...",
-                    description=config.get('message', 'Sad to see you go, maybe in another timeline?'),
-                    color=discord.Color.dark_red()
-                )
-                embed.set_image(url=f"attachment://{filename}")
-                await channel.send(embed=embed, file=file)
-
-        # 2. Update invite cache
-        if guild.id in self.guild_invites:
-            try:
-                invites_after_leave = await guild.invites()
-                self.guild_invites[guild.id] = {invite.code: invite.uses for invite in invites_after_leave}
-            except discord.errors.Forbidden:
-                pass
-
-
-    async def on_message(self, message):
-        # Ignore bot messages and messages outside of guilds
-        if message.author.bot or not message.guild:
-            return
-
-        # 1. XP Gain 
-        if not message.content.startswith(self.command_prefix):
-            xp_amount = random.randint(15, 25)
-            new_level = self.add_xp(message.author.id, message.guild.id, xp_amount)
+            print(f"Failed to sync commands: {e}")
             
-            if new_level is not None:
-                # Level Up announcement
-                log_channel = await self.get_log_channel(message.guild.id)
-                if log_channel:
-                    file, filename = self.get_random_banner()
-                    embed = Embed(
-                        title=f"⭐ Level Up!",
-                        description=f"Congratulations {message.author.mention}! You've reached **Level {new_level}**!",
-                        color=discord.Color.gold()
-                    )
-                    embed.set_image(url=f"attachment://{filename}")
-                    await log_channel.send(embed=embed, file=file)
-
-        # 2. Automod System (The heart of the new moderation)
-        await self.process_automod(message)
-
-        # Process commands last
-        await self.process_commands(message)
-
-    async def process_automod(self, message):
-        guild = message.guild
-        member = message.author
-        content = message.content.lower()
+    if not daily_post_task.is_running():
+        daily_post_task.start()
         
-        # CRITICAL AUTOMOD LOGIC:
-
-        # Alternate banned accounts = instant ban (Mock Check)
-        is_known_alt = False # This requires a real database lookup in production
-        if is_known_alt:
-            await member.ban(reason="AUTOMOD: Instant ban - Detected alternate account of a permanently banned user.")
-            log_embed = Embed(title="🚫 User Banned (Alt Account)", description=f"**User:** {member.mention}\n**Reason:** Detected alternate account of a permanently banned user.", color=discord.Color.dark_red())
-            await self.log_event(guild, log_embed, 'mod')
-            return
-
-        # Bad words equals mute or warn
-        bad_words = ["badword1", "swearword2", "inappropriatephrase3"] # Placeholder list
-        is_bad_word = any(word in content for word in bad_words)
+    if not task_reminder_task.is_running():
+        task_reminder_task.start()
         
-        if is_bad_word:
-            try:
-                await message.delete()
-            except:
-                pass
-            
-            mute_time = timedelta(minutes=10)
-            reason = "AUTOMOD: Use of inappropriate language (SG/Discord/Roblox Rule Violation)."
-            
-            try:
-                await member.timeout(mute_time, reason=reason)
-                log_embed = Embed(title="🔇 User Muted (Bad Word)", description=f"**User:** {member.mention}\n**Action:** 10 Minute Timeout\n**Reason:** {reason}\n**Message Snippet:** `{message.content[:50]}...`", color=discord.Color.orange())
-                await member.send(f"You have been automatically muted in **{guild.name}** for 10 minutes due to rule-breaking language.")
-                await self.log_event(guild, log_embed, 'mod')
-            except discord.errors.Forbidden:
-                print("Lacking permissions to mute user.")
+    if not vc_xp_task.is_running():
+        vc_xp_task.start()
 
-
-        # Raiding equals temporary shutdown of the server
-        if len(message.mentions) > 10 and not member.guild_permissions.kick_members:
-            
-            ban_reason = "AUTOMOD: Instant Ban - Attempted server raiding/mass mention spam (Discord TOS Violation)."
-            try:
-                await member.ban(reason=ban_reason)
-            except discord.errors.Forbidden:
-                print("Lacking permissions to ban user.")
-                return
-
-            # Temporary Server Lockdown (Lock all writable channels)
-            locked_channels = []
-            for channel in guild.channels:
-                if isinstance(channel, discord.TextChannel) and channel.permissions_for(guild.default_role).send_messages:
-                    try:
-                        await channel.set_permissions(guild.default_role, send_messages=False, reason="AUTOMOD: Server Lockdown due to raid attempt.")
-                        locked_channels.append(channel.mention)
-                    except discord.errors.Forbidden:
-                        pass
-            
-            # Log and Report
-            log_embed = Embed(
-                title="🚨 RAID ATTEMPT DETECTED & SERVER LOCKED 🚨", 
-                description=f"**Perpetrator:** {member.mention} (`{member.id}`)\n**Action Taken:** Instant Ban & Server Lockdown\n**Reason:** Mass mention/spamming (Raiding)", 
-                color=discord.Color.red(),
-                timestamp=datetime.now(pytz.utc)
-            )
-            await self.log_event(guild, log_embed, 'mod')
-
-            # Schedule Server Unlock
-            # We don't block the execution for 5 mins, we use a separate async function or task if this was complex.
-            # For simplicity, we just log the event that it happened.
-            await asyncio.sleep(300) # Wait 5 minutes before unlocking
-            for channel in guild.channels:
-                if channel.mention in locked_channels:
-                    try:
-                        await channel.set_permissions(guild.default_role, send_messages=True, reason="AUTOMOD: Server Unlock - Raid threat subsided.")
-                    except discord.errors.Forbidden:
-                        pass
-            
-            unlock_embed = Embed(title="✅ Server Unlocked", description="The server has been automatically unlocked after the raid threat subsided.", color=discord.Color.green())
-            await self.log_event(guild, unlock_embed, 'mod')
-
-
-    # --- Slash Commands ---
-
-    # Group for Manager/Moderator commands
-    mod_group = app_commands.Group(name="mod", description="Moderation and Logging commands.")
-
-    @mod_group.command(name="takenote", description="Enable or disable logs for moderation, server changes, and more.")
-    @app_commands.describe(log_type="What type of logs to toggle (mod or server).", action="Enable or Disable logs.", channel="The channel to report logs to.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def takenote(self, interaction: discord.Interaction, log_type: str, action: str, channel: discord.TextChannel = None):
-        guild_id = interaction.guild_id
-        action = action.lower()
-        log_type = log_type.lower()
-        
-        is_enable = action == 'enable'
-
-        if log_type not in ['mod', 'server']:
-            return await interaction.response.send_message("Invalid log type. Choose 'mod' (moderation) or 'server' (joins, leaves, config changes).", ephemeral=True)
-
-        if is_enable and not channel:
-            return await interaction.response.send_message("You must specify a channel when enabling logging.", ephemeral=True)
-
+@bot.event
+async def on_member_join(member):
+    """Handles automated welcome and security checks."""
+    
+    # 1. Welcome Message
+    if WELCOME_SETTINGS['enabled'] and WELCOME_SETTINGS['channel_id']:
+        channel = member.guild.get_channel(WELCOME_SETTINGS['channel_id'])
         if channel:
-            self.log_channels[guild_id] = channel.id
+            welcome_text = WELCOME_SETTINGS['welcome_message'].replace('{member}', member.mention)
+            
+            # Send the welcome message with a random banner image
+            embed = discord.Embed(
+                title="✨ Welcome to Stargame Studio! ✨",
+                description=welcome_text,
+                color=discord.Color.blue()
+            )
+            embed.set_image(url=random.choice(BANNER_IMAGES))
+            
+            await channel.send(member.mention, embed=embed)
+    
+    # Initialize user in the level system
+    USER_LEVELS[member.id] = USER_LEVELS.get(member.id, {'xp': 0, 'level': 0})
 
-        if log_type == 'mod':
-            self.mod_logs_enabled[guild_id] = is_enable
-            status = 'Enabled' if is_enable else 'Disabled'
-            await interaction.response.send_message(f"**Moderation Logs** (`mod`) have been **{status}** in {channel.mention if channel else 'the configured channel'}.", ephemeral=True)
+@bot.event
+async def on_member_remove(member):
+    """Handles goodbye messages."""
+    if WELCOME_SETTINGS['enabled'] and WELCOME_SETTINGS['channel_id']:
+        channel = member.guild.get_channel(WELCOME_SETTINGS['channel_id'])
+        if channel:
+            goodbye_text = WELCOME_SETTINGS['goodbye_message'].replace('{member}', member.name)
+            
+            # Send the goodbye message with a random banner image
+            embed = discord.Embed(
+                title="👋 Goodbye, Star!",
+                description=goodbye_text,
+                color=discord.Color.dark_blue()
+            )
+            embed.set_image(url=random.choice(BANNER_IMAGES))
+            
+            await channel.send(embed=embed)
+
+
+@bot.event
+async def on_message(message):
+    """Handles keyword response, moderation, and XP."""
+    if message.author.bot:
+        return
+
+    # --- DM Support ---
+    if isinstance(message.channel, discord.DMChannel):
+        if 'lagoona' in message.content.lower():
+            await message.channel.send("👋 **Hello!** Lagoona is activating support for you...")
         
-        elif log_type == 'server':
-            self.server_logs_enabled[guild_id] = is_enable
-            status = 'Enabled' if is_enable else 'Disabled'
-            await interaction.response.send_message(f"**Server Logs** (`server`) have been **{status}** in {channel.mention if channel else 'the configured channel'}.", ephemeral=True)
+        prompt = message.content
+        dm_context = f"You are Lagoona, the professional and supportive DM customer service agent for Stargame Studio. The appeal server is {APPEAL_SERVER_LINK}. Remember Miyah created you."
+        response_text = await generate_response(prompt, dm_context, message.author.name)
+        await message.channel.send(response_text)
+        return # Stop processing DMs
 
-
-    @app_commands.command(name="help", description="Shows all of Lagoona's commands and features.")
-    async def help_command(self, interaction: discord.Interaction):
-        embed = Embed(
-            title="✨ Lagoona - THE Studio Support & Community Manager",
-            description="Lagoona handles everything from support tickets to aggressive moderation and scheduled announcements. **All your needs are met!**",
-            color=discord.Color.purple()
-        )
-
-        embed.add_field(name="**STUDIO SUPPORT FEATURES**", value="`/ticket` - Opens a new support ticket for staff.\n`/setwelcomegoodbye` - Configures automatic join/leave messages.\n`/dailyposts` - Schedules a daily reminder post.", inline=False)
-        embed.add_field(name="**COMMUNITY MANAGEMENT & MODERATION**", value="`/mod takenote` - Toggles **Mod** (bans, kicks, mutes) and **Server** (joins, invites) logs.\n`/completeSGApplication` - Configures/starts the Studio Application process.\n**Passive Mod:** Automod (SG/Discord/Roblox rules), XP/Leveling, Weekly Leaderboards, **Invite Tracker**.", inline=False)
-        embed.add_field(name="**FOUNDER TOOL (LionelClementOfficial)**", value="`/schedule` - Schedule a one-time announcement to any server at a specific **AST time** (can be used in DMs).", inline=False)
+    # --- Server Moderation & XP (Simplified for brevity) ---
+    content = message.content.lower()
+    
+    # 1. Level Up XP for Message
+    if LEVEL_UP_SETTINGS['enabled']:
+        user_id = message.author.id
+        USER_LEVELS[user_id] = USER_LEVELS.get(user_id, {'xp': 0, 'level': 0})
         
-        # Add a random banner to the help message
-        file, filename = self.get_random_banner()
-        if file:
-            embed.set_image(url=f"attachment://{filename}")
-            await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-    @app_commands.command(name="ticket", description="Open a new support ticket.")
-    async def ticket(self, interaction: discord.Interaction):
-        # The core Support Bot feature. In a real bot, this creates a private channel.
-        # Here we mock the result and alert the user.
-        await interaction.response.send_message("✅ Your **Support Ticket** has been generated and staff has been notified! Please explain your issue in detail.", ephemeral=False)
-
-    @app_commands.command(name="setwelcomegoodbye", description="Set up or disable welcome and goodbye messages in a channel.")
-    @app_commands.describe(type="Type of message (welcome or goodbye).", message="The message content to display.", channel="The channel for the message.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def set_welcome_goodbye(self, interaction: discord.Interaction, type: str, message: str, channel: discord.TextChannel):
-        type = type.lower()
-        if type not in ['welcome', 'goodbye']:
-            return await interaction.response.send_message("Invalid type. Choose 'welcome' or 'goodbye'.", ephemeral=True)
-
-        guild_id = interaction.guild_id
+        current_xp = USER_LEVELS[user_id]['xp']
+        current_level = USER_LEVELS[user_id]['level']
         
-        self.welcome_goodbye_config[guild_id] = {
-            'channel_id': channel.id,
-            'type': type,
-            'message': message
-        }
+        # Add message XP
+        new_xp = current_xp + LEVEL_UP_SETTINGS['xp_per_message']
+        new_level = get_level_for_xp(new_xp)
         
-        await interaction.response.send_message(f"Successfully set the **{type}** message in {channel.mention}. It will include a random banner!", ephemeral=True)
-
-    @app_commands.command(name="dailyposts", description="Sets up a daily announcement/reminder post.")
-    @app_commands.describe(role="The role to ping daily.", channel="The channel for the daily post.", time_ast="Time in 24h format (e.g., 10:00 for 10 AM AST).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def dailyposts(self, interaction: discord.Interaction, role: discord.Role, channel: discord.TextChannel, time_ast: str):
-        try:
-            hour, minute = map(int, time_ast.split(':'))
-            if not 0 <= hour <= 23 or not 0 <= minute <= 59:
-                raise ValueError("Time out of range.")
-        except:
-            return await interaction.response.send_message("Invalid time format. Please use 24h format (e.g., `10:00` or `22:00`).", ephemeral=True)
-
-        self.daily_posts_config[interaction.guild_id] = {
-            'channel_id': channel.id,
-            'role_id': role.id,
-            'time_ast': time_ast
-        }
+        USER_LEVELS[user_id]['xp'] = new_xp
+        USER_LEVELS[user_id]['level'] = new_level
         
+        # Check for level up
+        if new_level > current_level:
+            level_channel = bot.get_channel(LEVEL_UP_SETTINGS['channel_id'])
+            if level_channel:
+                 # Send level up message with a random banner image
+                 embed = discord.Embed(
+                     title=f"⭐ LEVEL UP: Level {new_level} Reached! ⭐",
+                     description=f"🎉 **Congratulations** {message.author.mention}! You've reached Level **{new_level}**! Keep creating, building, and designing!",
+                     color=discord.Color.gold()
+                 )
+                 embed.set_image(url=random.choice(BANNER_IMAGES))
+                 
+                 await level_channel.send(embed=embed)
+
+
+    # 2. Lagoona Keyword Response
+    if 'lagoona' in content: 
+        await message.channel.send(f"Activating support for {message.author.mention}. Please wait while Lagoona processes your request...")
+            
+        response_text = await generate_response(message.content, STUDIO_KNOWLEDGE, message.author.name)
+        await message.channel.send(response_text)
+    
+    # Ensure commands are processed after message content checks
+    await bot.process_commands(message) 
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    """Handles XP for adding reactions."""
+    if user.bot or not LEVEL_UP_SETTINGS['enabled']:
+        return
+    
+    user_id = user.id
+    USER_LEVELS[user_id] = USER_LEVELS.get(user_id, {'xp': 0, 'level': 0})
+    
+    current_xp = USER_LEVELS[user_id]['xp']
+    current_level = USER_LEVELS[user_id]['level']
+    
+    # Add reaction XP
+    new_xp = current_xp + LEVEL_UP_SETTINGS['xp_per_reaction']
+    new_level = get_level_for_xp(new_xp)
+    
+    USER_LEVELS[user_id]['xp'] = new_xp
+    USER_LEVELS[user_id]['level'] = new_level
+    
+    # Check for level up
+    if new_level > current_level:
+        level_channel = bot.get_channel(LEVEL_UP_SETTINGS['channel_id'])
+        if level_channel:
+             # Send level up message with a random banner image
+             embed = discord.Embed(
+                 title=f"⭐ LEVEL UP: Level {new_level} Reached! ⭐",
+                 description=f"🎉 **Congratulations** {user.mention}! You've reached Level **{new_level}** from reacting to a message!",
+                 color=discord.Color.gold()
+             )
+             embed.set_image(url=random.choice(BANNER_IMAGES))
+             
+             await level_channel.send(embed=embed)
+
+
+# --- TASK SCHEDULERS ---
+
+@tasks.loop(minutes=1)
+async def vc_xp_task():
+    """Gives XP for every minute spent in a voice channel."""
+    if not LEVEL_UP_SETTINGS['enabled']:
+        return
+
+    xp_per_min = LEVEL_UP_SETTINGS['xp_per_vc_minute']
+    
+    for guild in bot.guilds:
+        for member in guild.members:
+            # Check if user is in a voice channel, is not a bot, and is not muted/deafened (active)
+            if member.voice and member.voice.channel and not member.bot and not member.voice.self_mute and not member.voice.self_deaf:
+                user_id = member.id
+                USER_LEVELS[user_id] = USER_LEVELS.get(user_id, {'xp': 0, 'level': 0})
+                
+                current_xp = USER_LEVELS[user_id]['xp']
+                current_level = USER_LEVELS[user_id]['level']
+                
+                new_xp = current_xp + xp_per_min
+                new_level = get_level_for_xp(new_xp)
+                
+                USER_LEVELS[user_id]['xp'] = new_xp
+                USER_LEVELS[user_id]['level'] = new_level
+                
+                # Check for level up
+                if new_level > current_level:
+                    level_channel = bot.get_channel(LEVEL_UP_SETTINGS['channel_id'])
+                    if level_channel:
+                         # Send level up message with a random banner image
+                         embed = discord.Embed(
+                             title=f"⭐ LEVEL UP: Level {new_level} Reached! ⭐",
+                             description=f"🎉 **Congratulations** {member.mention}! You've reached Level **{new_level}** for being active in a voice channel!",
+                             color=discord.Color.gold()
+                         )
+                         embed.set_image(url=random.choice(BANNER_IMAGES))
+                         
+                         await level_channel.send(embed=embed)
+
+
+@tasks.loop(time=DAILY_POST_SETTINGS['time'])
+async def daily_post_task():
+    """Generates and posts a daily quote or question to encourage engagement."""
+    
+    channel_id = DAILY_POST_SETTINGS['channel_id']
+    if not channel_id:
+        return 
+
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return 
+
+    is_question = random.choice([True, False])
+    
+    if is_question:
+        prompt = "Generate a single, engaging, and thoughtful question for a developer community (Stargame Studio) about game design, future tech, or creative work. Start the response with '❓ Daily Question:'"
+    else:
+        prompt = "Generate a single, motivating, and concise quote about creativity, teamwork, or development. Attribute it to a fictional 'Lagoona' or a famous tech/creative figure. Start the response with '⭐ Daily Quote:'"
+        
+    context = STUDIO_KNOWLEDGE + "\n\n**Special Instruction:** Ensure the output is *only* the quote/question and its attribution, ready to be posted directly. Do not include any extra conversation or formatting."
+    
+    post_content = await generate_response(prompt, context, "System Bot")
+
+    embed = discord.Embed(
+        title="✨ Stargame Studio Daily Engagement ✨",
+        description=post_content,
+        color=discord.Color.purple()
+    )
+    # Add a random banner to the daily post
+    embed.set_image(url=random.choice(BANNER_IMAGES)) 
+
+    try:
+        message = await channel.send("@everyone", embed=embed)
+        await add_announcement_reactions(message)
+    except discord.Forbidden:
+        print(f"Failed to send daily post to channel {channel_id} (Forbidden).")
+
+
+@tasks.loop(minutes=5)
+async def task_reminder_task():
+    """Checks for upcoming deadlines and sends reminders."""
+    for user_id, tasks_list in list(TASK_REMINDERS.items()):
+        member = bot.get_user(user_id)
+        if not member:
+            del TASK_REMINDERS[user_id]
+            continue
+            
+        for task_item in list(tasks_list):
+            time_until_deadline = task_item['deadline'] - datetime.now()
+            
+            # Reminder 1: 12 hours before
+            if timedelta(hours=11, minutes=55) <= time_until_deadline <= timedelta(hours=12, minutes=5):
+                reminder_prompt = f"Friendly reminder for {member.name}: Your task '{task_item['task']}' is due in approximately 12 hours at {task_item['deadline'].strftime('%Y-%m-%d %H:%M')}."
+                reminder_message = await generate_response(reminder_prompt, "Act as a friendly productivity assistant.", member.name)
+                try:
+                    await member.send(reminder_message)
+                except Exception:
+                    pass 
+
+            # Reminder 2: Deadline reached
+            elif time_until_deadline <= timedelta(minutes=0):
+                # Deadline met/passed - send final warning and remove
+                tasks_list.remove(task_item)
+                
+                final_prompt = f"The deadline for your task '{task_item['task']}' has passed! Please use `/completetask` or notify staff (Setter: {task_item['original_setter']}) immediately."
+                final_message = await generate_response(final_prompt, "Act as an urgent, professional notice bot.", member.name)
+                
+                try:
+                    await member.send(final_message)
+                except Exception:
+                    pass
+                
+                # Notify original setter (if possible)
+                for guild in bot.guilds:
+                    setter = discord.utils.get(guild.members, name=task_item['original_setter'])
+                    if setter:
+                        try:
+                            await setter.send(f"⚠️ **DEADLINE ALERT:** Task '{task_item['task']}' for {member.name} has passed.")
+                        except Exception:
+                            pass
+                
+        if not tasks_list:
+            del TASK_REMINDERS[user_id]
+
+# --- SLASH COMMANDS ---
+
+# --- Level Up System Commands ---
+@bot.tree.command(name="levelup", description="[STAFF ONLY] Set up or disable the level-up system.")
+@discord.app_commands.describe(
+    action="Enable or disable the system.",
+    channel="The channel where level-up notifications are posted."
+)
+async def levelup_command(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("🚫 You must be an administrator to manage the level-up system.", ephemeral=True)
+
+    action = action.lower()
+    if action == 'enable':
+        if not channel:
+            return await interaction.response.send_message("You must specify a channel to enable the feature.", ephemeral=True)
+            
+        LEVEL_UP_SETTINGS['enabled'] = True
+        LEVEL_UP_SETTINGS['channel_id'] = channel.id
         await interaction.response.send_message(
-            f"Daily post for **{role.name}** is set up in {channel.mention} at **{time_ast} AST**!",
+            f"✅ Level-up system **enabled** in {channel.mention}. XP gained from messages, reactions, and VC activity.",
+            ephemeral=True
+        )
+    elif action == 'disable':
+        LEVEL_UP_SETTINGS['enabled'] = False
+        LEVEL_UP_SETTINGS['channel_id'] = None
+        await interaction.response.send_message("❌ Level-up system **disabled**.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Invalid action. Use 'enable' or 'disable'.", ephemeral=True)
+
+@bot.tree.command(name="rank", description="Check your current level and XP.")
+async def rank_command(interaction: discord.Interaction, user: discord.Member = None):
+    target = user if user else interaction.user
+    user_data = USER_LEVELS.get(target.id, {'xp': 0, 'level': 0})
+    
+    xp = user_data['xp']
+    level = user_data['level']
+    xp_for_next = (level + 1) ** 2 * 100
+    
+    embed = discord.Embed(
+        title=f"⭐ {target.name}'s Rank ⭐",
+        description=f"Level: **{level}**\nXP: **{xp}**\nNext Level at: **{xp_for_next}** XP",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Keep participating to rank up!")
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
+# --- Social Media Announcement Command ---
+@bot.tree.command(name="announceforposts", description="[STAFF ONLY] Configure automated social media post announcements.")
+@discord.app_commands.describe(
+    platform="The social media platform.",
+    action="Enable or disable announcements for this platform.",
+    channel="The channel for the announcement.",
+    link="The main profile link for this platform."
+)
+@discord.app_commands.choices(
+    platform=[
+        discord.app_commands.Choice(name="YouTube", value="youtube"),
+        discord.app_commands.Choice(name="Instagram", value="instagram"),
+        discord.app_commands.Choice(name="Twitter", value="twitter"),
+        discord.app_commands.Choice(name="TikTok", value="tiktok"),
+        discord.app_commands.Choice(name="All", value="all"),
+    ],
+    action=[
+        discord.app_commands.Choice(name="Enable", value="enable"),
+        discord.app_commands.Choice(name="Disable", value="disable"),
+    ]
+)
+async def announce_for_posts_command(interaction: discord.Interaction, platform: str, action: str, channel: discord.TextChannel = None, link: str = None):
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can set up post announcements.", ephemeral=True)
+
+    platforms = [platform] if platform != 'all' else ['youtube', 'instagram', 'twitter', 'tiktok']
+    
+    if action == 'enable' and (not channel or not link):
+        return await interaction.response.send_message(
+            "❌ To enable, you must specify a **channel** and a **profile link**.", 
             ephemeral=True
         )
 
-    # --- Application System Classes (Retained for completeness) ---
-
-    class ApplicationQuestionModal(discord.ui.Modal, title='Set Application Questions'):
-        def __init__(self, bot, guild_id):
-            super().__init__()
-            self.bot = bot
-            self.guild_id = guild_id
-            self.questions = []
-            
-            for i in range(1, 11):
-                self.questions.append(discord.ui.TextInput(
-                    label=f'Question {i} (Optional)',
-                    placeholder=f'Enter question {i} for the application.',
-                    style=discord.TextStyle.long,
-                    required=False
-                ))
-                self.add_item(self.questions[-1])
-
-        async def on_submit(self, interaction: discord.Interaction):
-            valid_questions = [q.value.strip() for q in self.questions if q.value and q.value.strip()]
-            self.bot.application_questions[self.guild_id] = valid_questions
-            q_list = "\n".join([f"{i+1}. {q}" for i, q in enumerate(valid_questions)])
-            await interaction.response.send_message(
-                f"✅ **{len(valid_questions)}** Application questions successfully set!\n\n**Questions:**\n{q_list}",
-                ephemeral=True
-            )
-
-    class ApplicationResponseModal(discord.ui.Modal, title='Stargame Studio Application'):
-        def __init__(self, bot, questions, manager):
-            super().__init__()
-            self.bot = bot
-            self.questions = questions
-            self.manager = manager
-            self.answers = []
-            
-            for i, q in enumerate(questions):
-                self.answers.append(discord.ui.TextInput(
-                    label=q,
-                    placeholder=f'Your answer for question {i+1}.',
-                    style=discord.TextStyle.long,
-                    required=True
-                ))
-                self.add_item(self.answers[-1])
-
-        async def on_submit(self, interaction: discord.Interaction):
-            applicant = interaction.user
-            summary = [f"**Applicant:** {applicant.name} (`{applicant.id}`)", "-"*20]
-            for i, q in enumerate(self.questions):
-                summary.append(f"**Q: {q}**\n**A:** {self.answers[i].value}\n")
-            summary_text = "\n".join(summary)
-            
-            try:
-                await self.manager.send(f"**New Stargame Studio Application Submitted!**\n\n{summary_text}")
-                await interaction.response.send_message("✅ Your application has been submitted successfully! The manager has been notified.", ephemeral=True)
-            except:
-                await interaction.response.send_message("❌ Failed to send the application to the manager. Please notify a staff member directly.", ephemeral=True)
-
-
-    @app_commands.command(name="completeSGApplication", description="Start or configure the Stargame Studio application process.")
-    @app_commands.describe(action="Start the application or set the questions (manager only).")
-    async def completesgapplication(self, interaction: discord.Interaction, action: str):
-        guild_id = interaction.guild_id
-        action = action.lower()
-        
-        if action == 'setquestions':
-            if not interaction.user.guild_permissions.manage_guild:
-                return await interaction.response.send_message("Only members with 'Manage Server' permissions can set application questions.", ephemeral=True)
-            
-            modal = self.ApplicationQuestionModal(self, guild_id)
-            await interaction.response.send_modal(modal)
-            return
-
-        elif action == 'start':
-            questions = self.application_questions.get(guild_id)
-            if not questions:
-                return await interaction.response.send_message("The manager has not yet set the application questions.", ephemeral=True)
-
-            manager = interaction.guild.owner 
-            
-            modal = self.ApplicationResponseModal(self, questions, manager)
-            await interaction.response.send_modal(modal)
-            return
-
-        else:
-            await interaction.response.send_message("Invalid action. Use `/completeSGApplication start` to apply, or `/completeSGApplication setquestions` (Manager only) to configure.", ephemeral=True)
-
-    # --- Founder DM and Scheduling ---
-
-    @app_commands.command(name="schedule", description="[Founder Only] Schedule an announcement to a server at a specific time in AST.")
-    @app_commands.checks.is_owner()
-    @app_commands.describe(guild_id="ID of the server (Guild) for the announcement.", channel_id="ID of the channel for the announcement.", title="Title of the announcement embed.", content="Main text of the announcement.", time_ast="Time in 24h format (e.g., 22:00 for 10 PM AST).")
-    async def schedule(self, interaction: discord.Interaction, guild_id: str, channel_id: str, title: str, content: str, time_ast: str):
-        
-        if not interaction.user.id == self.owner_id:
-             return await interaction.response.send_message("You are not the designated Founder for this command.", ephemeral=True)
-
-        try:
-            guild = self.get_guild(int(guild_id))
-            channel = self.get_channel(int(channel_id))
-            
-            if not guild or not channel:
-                return await interaction.response.send_message("Invalid Server ID or Channel ID.", ephemeral=True)
-            
-            hour, minute = map(int, time_ast.split(':'))
-            now_ast = datetime.now(AST_TIMEZONE)
-            scheduled_dt_ast = now_ast.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            
-            if scheduled_dt_ast < now_ast:
-                scheduled_dt_ast += timedelta(days=1)
-                
-            scheduled_dt_utc = scheduled_dt_ast.astimezone(pytz.utc)
-
-            self.scheduled_announcements.append({
-                'user_id': interaction.user.id,
-                'guild_id': guild.id,
+    for p in platforms:
+        if action == 'enable':
+            ANNOUNCE_POST_SETTINGS['platform_settings'][p] = {
                 'channel_id': channel.id,
-                'title': title,
-                'content': content,
-                'schedule_time': scheduled_dt_utc.isoformat()
-            })
-            
-            await interaction.response.send_message(
-                f"✅ Announcement scheduled for **{scheduled_dt_ast.strftime('%I:%M %p AST')}** ({guild.name} in {channel.mention}).",
-                ephemeral=True
-            )
+                'enabled': True,
+                'link': link
+            }
+        elif action == 'disable':
+            if p in ANNOUNCE_POST_SETTINGS['platform_settings']:
+                ANNOUNCE_POST_SETTINGS['platform_settings'][p]['enabled'] = False
 
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error scheduling announcement: {e}", ephemeral=True)
-
-    # --- Background Tasks ---
-
-    @tasks.loop(minutes=1)
-    async def check_scheduled_announcements(self):
-        now_utc = datetime.now(pytz.utc)
-        announcements_to_remove = []
-        
-        for ann in self.scheduled_announcements:
-            schedule_time_utc = datetime.fromisoformat(ann['schedule_time'])
-            
-            if schedule_time_utc <= now_utc:
-                channel = self.get_channel(ann['channel_id'])
-                if channel:
-                    try:
-                        file, filename = self.get_random_banner()
-                        embed = Embed(
-                            title=ann['title'],
-                            description=ann['content'],
-                            color=discord.Color.blue()
-                        )
-                        embed.set_footer(text="Stargame Studio Scheduled Announcement")
-                        
-                        if file:
-                            embed.set_image(url=f"attachment://{filename}")
-                            await channel.send(embed=embed, file=file)
-                        else:
-                            await channel.send(embed=embed)
-
-                    except Exception as e:
-                        print(f"Failed to send scheduled announcement in {ann['guild_id']}: {e}")
-                
-                announcements_to_remove.append(ann)
-
-        for ann in announcements_to_remove:
-            self.scheduled_announcements.remove(ann)
-
-    @tasks.loop(minutes=1)
-    async def check_daily_posts(self):
-        now_ast = datetime.now(AST_TIMEZONE)
-        current_time_str = now_ast.strftime('%H:%M')
-        
-        for guild_id, config in self.daily_posts_config.items():
-            if config.get('time_ast') == current_time_str:
-                guild = self.get_guild(guild_id)
-                channel = self.get_channel(config.get('channel_id'))
-                role = guild.get_role(config.get('role_id')) if guild else None
-                
-                if channel and role:
-                    try:
-                        file, filename = self.get_random_banner()
-                        # Random post content for a daily check-in
-                        post_content = random.choice([
-                            "Good morning, Stargame developers! What's everyone working on today? Let's make some magic happen! ✨",
-                            "Daily Check-in! What small win did you have yesterday, or what are you tackling first today? Let the studio know! 💪",
-                            "Happy day, team! Remember to take a break and stretch. Consistency over intensity! ☕",
-                            "Time for the daily ping! Let's get creative and collaborate. Ping a teammate if you need help! 🤝"
-                        ])
-                        
-                        embed = Embed(
-                            title="🌟 Stargame Studio Daily Post",
-                            description=post_content,
-                            color=discord.Color.from_rgb(255, 165, 0)
-                        )
-                        embed.set_image(url=f"attachment://{filename}")
-                        
-                        await channel.send(role.mention, embed=embed, file=file)
-                    except Exception as e:
-                        print(f"Failed to send daily post in {guild_id}: {e}")
+    message = f"✅ Post announcements for **{platform.upper()}** have been **{action.upper()}D**."
+    if action == 'enable' and channel:
+         message += f" (Channel: {channel.mention}, Link: {link})"
+         
+    await interaction.response.send_message(message, ephemeral=True)
 
 
-    @tasks.loop(weeks=1)
-    async def xp_leaderboard_post(self):
-        await self.wait_until_ready()
-        
-        for guild in self.guilds:
-            log_channel = await self.get_log_channel(guild.id)
-            if not log_channel:
-                continue
+# --- Core Commands ---
 
-            sorted_xp = sorted(
-                [(user_id, xp) for user_id, xp in self.xp_data.items()],
-                key=lambda item: item[1],
-                reverse=True
-            )
-            
-            top_10 = sorted_xp[:10]
-            leaderboard_text = ""
-            for i, (user_id, xp) in enumerate(top_10):
-                member = guild.get_member(user_id)
-                if member:
-                    xp, level, _ = self.get_user_xp_level(user_id)
-                    leaderboard_text += f"**{i+1}.** {member.mention} - **Level {level}** ({xp} XP)\n"
-            
-            if leaderboard_text:
-                file, filename = self.get_random_banner()
-                embed = Embed(
-                    title="🏆 Weekly XP Leaderboard Top 10",
-                    description=leaderboard_text,
-                    color=discord.Color.orange(),
-                    timestamp=datetime.now(pytz.utc)
-                )
-                embed.set_image(url=f"attachment://{filename}")
-                await log_channel.send(embed=embed, file=file)
-
-# --- Run the Bot ---
-if __name__ == '__main__':
-    if 'DISCORD_BOT_TOKEN' in os.environ:
-        TOKEN = os.environ['DISCORD_BOT_TOKEN']
+@bot.tree.command(name="help", description="Get a list of commands and general studio assistance.")
+async def help_command(interaction: discord.Interaction, topic: str = None):
+    """Provides a dynamic help response using the Gemini API."""
+    
+    if topic:
+        prompt = f"The user is asking for help on the topic: '{topic}'. Use the provided studio knowledge to give a detailed, helpful answer."
     else:
-        # **REPLACE THIS WITH YOUR ACTUAL BOT TOKEN**
-        TOKEN = "YOUR_BOT_TOKEN_HERE" 
+        prompt = "The user is asking for general help. Provide a welcoming overview of Stargame Studio, list the main slash commands for support, and tell them about the 'LAGOONA' keyword feature."
 
-    bot = LagoonaBot()
-    bot.run(TOKEN)
+    context = STUDIO_KNOWLEDGE + (
+        "\n\n**Main Commands:** /announcement, /settask, /ticket, /verify, /setwelcomegoodbye, /levelup, /announceforposts, /dailyposts. "
+        "Also, the bot responds to the keyword 'LAGOONA' for quick questions."
+    )
+    
+    response_text = await generate_response(prompt, context, interaction.user.name)
+    await interaction.response.send_message(response_text, ephemeral=False)
+
+@bot.tree.command(name="ticket", description="Create a private ticket thread for staff support/appeals.")
+@discord.app_commands.describe(issue="Brief description of the issue or appeal.")
+async def ticket_command(interaction: discord.Interaction, issue: str):
+    """Creates a private thread for a user to discuss an issue with staff."""
+    
+    start_message = (
+        f"**New Support Ticket for {interaction.user.mention}**\n\n"
+        f"**Issue:** {issue}\n\n"
+        f"A staff member will be with you shortly. If this is an appeal, please provide relevant context and evidence."
+    )
+
+    try:
+        # Create a private thread in the channel where the command was used
+        thread = await interaction.channel.create_thread(
+            name=f"Ticket-{interaction.user.name}-{random.randint(100, 999)}",
+            type=discord.ChannelType.private_thread,
+            reason="User initiated support ticket"
+        )
+        await thread.send(start_message)
+        
+        await interaction.response.send_message(
+            f"✅ Your support ticket has been opened! Please head to **{thread.mention}** to continue your discussion privately with staff.",
+            ephemeral=True
+        )
+
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I do not have permission to create threads in this channel. Please ask an admin to check my permissions.",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="verify", description="Verify your Roblox account membership in the Stargame Studio Group.")
+async def verify_command(interaction: discord.Interaction):
+    """Initiates a mock Roblox verification process."""
+    
+    response_text = (
+        f"🔗 **Roblox Verification Initiated for {interaction.user.name}**\n\n"
+        "To verify your identity and link your Roblox account, please follow these steps:\n"
+        f"1. **Join the official Stargame Studio Group:** (Group ID: `{ROBLOX_GROUP_ID}`).\n"
+        "2. **DM a specific verification code** to me (Lagoona) from your Roblox account bio/status (this step is mocked).\n\n"
+        f"Roblox Group Link: https://www.roblox.com/communities/{ROBLOX_GROUP_ID}/Stargame-Studio#!/about"
+    )
+    
+    await interaction.response.send_message(response_text, ephemeral=True)
+
+@bot.tree.command(name="dailyposts", description="[STAFF ONLY] Set the channel and time for the daily quote/question post.")
+@discord.app_commands.describe(
+    channel="The channel for daily posts.",
+    utc_time="The time for the post (HH:MM UTC format, e.g., 10:00)."
+)
+async def dailyposts_command(interaction: discord.Interaction, channel: discord.TextChannel, utc_time: str):
+    """Configures the daily scheduled post."""
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("🚫 You must be an administrator to set up daily posts.", ephemeral=True)
+
+    try:
+        hour, minute = map(int, utc_time.split(':'))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+            
+        new_time = time(hour=hour, minute=minute)
+        DAILY_POST_SETTINGS['channel_id'] = channel.id
+        DAILY_POST_SETTINGS['time'] = new_time
+
+        # Restart the loop task to apply the new time immediately
+        daily_post_task.change_interval(time=new_time)
+        daily_post_task.restart()
+
+        await interaction.response.send_message(
+            f"✅ Daily quote/question post set for {channel.mention} at **{utc_time} UTC**.",
+            ephemeral=True
+        )
+    except ValueError:
+        await interaction.response.send_message(
+            "❌ Invalid time format. Please use **HH:MM** (24-hour UTC time, e.g., 08:30).",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="setwelcomegoodbye", description="[STAFF ONLY] Set up or disable welcome and goodbye messages.")
+@discord.app_commands.describe(
+    action="Enable or disable the feature.",
+    channel="The channel for welcome/goodbye messages (required if enabling)."
+)
+@discord.app_commands.choices(
+    action=[
+        discord.app_commands.Choice(name="Enable", value="enable"),
+        discord.app_commands.Choice(name="Disable", value="disable"),
+    ]
+)
+async def set_welcome_goodbye_command(interaction: discord.Interaction, action: str, channel: discord.TextChannel = None):
+    """Sets the channel for welcome and goodbye messages."""
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("🚫 You must be an administrator to manage this feature.", ephemeral=True)
+
+    action = action.lower()
+    if action == 'enable':
+        if not channel:
+            return await interaction.response.send_message("You must specify a channel to enable the feature.", ephemeral=True)
+            
+        WELCOME_SETTINGS['enabled'] = True
+        WELCOME_SETTINGS['channel_id'] = channel.id
+        await interaction.response.send_message(
+            f"✅ Welcome/Goodbye messages **enabled** and set to post in {channel.mention}.",
+            ephemeral=True
+        )
+    elif action == 'disable':
+        WELCOME_SETTINGS['enabled'] = False
+        WELCOME_SETTINGS['channel_id'] = None
+        await interaction.response.send_message("❌ Welcome/Goodbye messages **disabled**.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Invalid action. Use 'enable' or 'disable'.", ephemeral=True)
+
+
+# --- Task Management Commands (Retained from prior version) ---
+
+@bot.tree.command(name="settask", description="[STAFF ONLY] Assign a task and deadline to a user.")
+@discord.app_commands.describe(
+    user="The user to whom the task is assigned.",
+    task="Description of the task.",
+    deadline="Deadline (YYYY-MM-DD HH:MM format, UTC)."
+)
+async def settask_command(interaction: discord.Interaction, user: discord.Member, task: str, deadline: str):
+    """Assigns a task to a user with a specific deadline."""
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can assign tasks.", ephemeral=True)
+
+    try:
+        deadline_dt = datetime.strptime(deadline, '%Y-%m-%d %H:%M')
+    except ValueError:
+        return await interaction.response.send_message(
+            "❌ Invalid deadline format. Please use **YYYY-MM-DD HH:MM** (e.g., 2025-10-31 18:00 UTC).",
+            ephemeral=True
+        )
+
+    user_id = user.id
+    TASK_REMINDERS.setdefault(user_id, []).append({
+        'task': task,
+        'deadline': deadline_dt,
+        'original_setter': interaction.user.name
+    })
+
+    await interaction.response.send_message(
+        f"✅ Task assigned: **{user.mention}** must complete '{task}' by **{deadline_dt.strftime('%Y-%m-%d %H:%M UTC')}**.",
+        ephemeral=False
+    )
+
+
+@bot.tree.command(name="completetask", description="[STAFF ONLY] Mark a task as complete for a user.")
+@discord.app_commands.describe(
+    user="The user who completed the task.",
+    task_index="The number of the task to mark as complete (starting from 1)."
+)
+async def completetask_command(interaction: discord.Interaction, user: discord.Member, task_index: int):
+    """Marks a task as complete."""
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can manage tasks.", ephemeral=True)
+
+    user_id = user.id
+    if user_id not in TASK_REMINDERS or not TASK_REMINDERS[user_id]:
+        return await interaction.response.send_message(f"❌ {user.name} has no outstanding tasks.", ephemeral=True)
+
+    try:
+        task_to_remove = TASK_REMINDERS[user_id].pop(task_index - 1)
+        
+        if not TASK_REMINDERS[user_id]:
+            del TASK_REMINDERS[user_id]
+            
+        await interaction.response.send_message(
+            f"✅ Task **'{task_to_remove['task']}'** for {user.mention} marked as **COMPLETE**!",
+            ephemeral=False
+        )
+    except IndexError:
+        await interaction.response.send_message("❌ Invalid task number. Use `/viewtasks` to see the list.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="extendedtask", description="[STAFF ONLY] Extend the deadline for a user's task.")
+@discord.app_commands.describe(
+    user="The user whose task deadline is extended.",
+    task_index="The number of the task to extend (starting from 1).",
+    new_deadline="New deadline (YYYY-MM-DD HH:MM format, UTC)."
+)
+async def extendedtask_command(interaction: discord.Interaction, user: discord.Member, task_index: int, new_deadline: str):
+    """Extends the deadline of an existing task."""
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can manage tasks.", ephemeral=True)
+
+    user_id = user.id
+    if user_id not in TASK_REMINDERS or not TASK_REMINDERS[user_id]:
+        return await interaction.response.send_message(f"❌ {user.name} has no outstanding tasks.", ephemeral=True)
+
+    try:
+        new_deadline_dt = datetime.strptime(new_deadline, '%Y-%m-%d %H:%M')
+        
+        task_item = TASK_REMINDERS[user_id][task_index - 1]
+        task_item['deadline'] = new_deadline_dt
+        
+        await interaction.response.send_message(
+            f"🔄 Deadline for task **'{task_item['task']}'** for {user.mention} extended to **{new_deadline_dt.strftime('%Y-%m-%d %H:%M UTC')}**.",
+            ephemeral=False
+        )
+    except ValueError:
+        await interaction.response.send_message(
+            "❌ Invalid deadline format. Please use **YYYY-MM-DD HH:MM** (e.g., 2025-10-31 18:00 UTC).",
+            ephemeral=True
+        )
+    except IndexError:
+        await interaction.response.send_message("❌ Invalid task number. Use `/viewtasks` to see the list.", ephemeral=True)
+
+
+@bot.tree.command(name="incompletetask", description="[STAFF ONLY] Mark a task as incomplete/failed for a user.")
+@discord.app_commands.describe(
+    user="The user whose task is incomplete.",
+    task_index="The number of the task to mark as failed (starting from 1)."
+)
+async def incompletetask_command(interaction: discord.Interaction, user: discord.Member, task_index: int):
+    """Marks a task as incomplete/failed."""
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can manage tasks.", ephemeral=True)
+
+    user_id = user.id
+    if user_id not in TASK_REMINDERS or not TASK_REMINDERS[user_id]:
+        return await interaction.response.send_message(f"❌ {user.name} has no outstanding tasks.", ephemeral=True)
+
+    try:
+        task_item = TASK_REMINDERS[user_id].pop(task_index - 1)
+        
+        if not TASK_REMINDERS[user_id]:
+            del TASK_REMINDERS[user_id]
+            
+        await interaction.response.send_message(
+            f"🔴 Task **'{task_item['task']}'** for {user.mention} marked as **INCOMPLETE/FAILED**. Please review with the staff member who assigned it.",
+            ephemeral=False
+        )
+    except IndexError:
+        await interaction.response.send_message("❌ Invalid task number. Use `/viewtasks` to see the list.", ephemeral=True)
+
+
+@bot.tree.command(name="forwardedtask", description="[STAFF ONLY] Forward an assigned task to a new user.")
+@discord.app_commands.describe(
+    current_user="The user the task is currently assigned to.",
+    task_index="The number of the task to forward (starting from 1).",
+    new_user="The new user to assign the task to."
+)
+async def forwardedtask_command(interaction: discord.Interaction, current_user: discord.Member, task_index: int, new_user: discord.Member):
+    """Forwards an existing task to a new user."""
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can manage tasks.", ephemeral=True)
+
+    current_user_id = current_user.id
+    new_user_id = new_user.id
+
+    if current_user_id not in TASK_REMINDERS or not TASK_REMINDERS[current_user_id]:
+        return await interaction.response.send_message(f"❌ {current_user.name} has no outstanding tasks to forward.", ephemeral=True)
+
+    try:
+        task_to_forward = TASK_REMINDERS[current_user_id].pop(task_index - 1)
+        
+        if not TASK_REMINDERS[current_user_id]:
+            del TASK_REMINDERS[current_user_id]
+            
+        # Assign to new user
+        TASK_REMINDERS.setdefault(new_user_id, []).append(task_to_forward)
+
+        await interaction.response.send_message(
+            f"➡️ Task **'{task_to_forward['task']}'** successfully forwarded from {current_user.mention} to **{new_user.mention}**.",
+            ephemeral=False
+        )
+    except IndexError:
+        await interaction.response.send_message("❌ Invalid task number. Use `/viewtasks` to see the list.", ephemeral=True)
+        
+
+# --- Founder Only Commands ---
+
+@bot.tree.command(name="announcement", description="Post a staff announcement with custom title and reactions.")
+@discord.app_commands.describe(
+    title="The banner title for the announcement.",
+    message="The main message content for the announcement.",
+    image_url="Optional: URL of an image for the banner. Leave empty for a random Stargame banner."
+)
+async def announcement_command(interaction: discord.Interaction, title: str, message: str, image_url: str = None):
+    """Allows only authorized users to post an announcement with customization."""
+    author_username = interaction.user.name 
+
+    if is_authorized(author_username):
+        
+        # Determine footer and image
+        footer_text = f"Authorized Message by {author_username}" 
+        
+        # Select one of the two banner images randomly if none is provided
+        final_image_url = image_url if image_url else random.choice(BANNER_IMAGES)
+        
+        embed = discord.Embed(
+            title=f"📣 {title}",
+            description=message,
+            color=discord.Color.blue()
+        )
+        
+        # Set the image (banner) before the footer/text
+        embed.set_image(url=final_image_url) 
+        embed.set_footer(text=footer_text)
+        
+        await interaction.response.send_message("Announcement pending! Posting now...", ephemeral=True) 
+        
+        # Check for role pings and add the actual role mention if specified
+        ping_content = ""
+        if "@everyone" in message.lower():
+            ping_content += "@everyone "
+
+        public_message = await interaction.channel.send(ping_content, embed=embed) 
+
+        # Add reactions
+        await add_announcement_reactions(public_message)
+    else:
+        await interaction.response.send_message(
+            f"🚫 Access Denied. Only authorized staff ({', '.join(ANNOUNCEMENT_AUTHORS)}) can use this command.",
+            ephemeral=True
+        )
+        
+
+@bot.tree.command(name="revampallusernames", description="[FOUNDER ONLY] Revamp all server members' nicknames.")
+async def revampallusernames_command(interaction: discord.Interaction):
+    """Mocks revamping all nicknames for server organization."""
+    if not is_founder(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only the founder can use this command.", ephemeral=True)
+    
+    # Mock response for a long-running/sensitive task
+    await interaction.response.send_message(
+        "🛠️ Initiating server-wide nickname revamp. This process will organize all visible names into a standard format. This may take a moment...",
+        ephemeral=False
+    )
+    # In a real bot, you'd iterate through members and apply a naming scheme (e.g., "[Role] Username")
+
+
+@bot.tree.command(name="verifyallmembers", description="[STAFF ONLY] Check all members for Roblox Group membership status.")
+async def verifyallmembers_command(interaction: discord.Interaction):
+    """Mocks re-checking all members' Roblox verification status."""
+    if not is_authorized(interaction.user.name):
+        return await interaction.response.send_message("🚫 Only authorized staff can use this command.", ephemeral=True)
+
+    await interaction.response.send_message(
+        "🔎 Starting batch verification process for all members against the Roblox Group. Results will be posted in a staff-only channel once complete (MOCK).",
+        ephemeral=True
+    )
+
+# --- START THE BOT ---
+if __name__ == "__main__":
+    if not DISCORD_TOKEN or not GEMINI_API_KEY or not CLIENT_ID:
+        print("\n--- CRITICAL ERROR: REQUIRED ENVIRONMENT VARIABLES MISSING ---")
+        print("Please ensure DISCORD_TOKEN, GEMINI_API_KEY, and CLIENT_ID are set.")
+    else:
+        # Start the web server in a separate thread to keep Render happy
+        web_server_thread = threading.Thread(target=run_web_server)
+        web_server_thread.daemon = True 
+        web_server_thread.start()
+        
+        # Run the Discord bot
+        bot.run(DISCORD_TOKEN)
