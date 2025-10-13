@@ -27,7 +27,7 @@ def run_web_server():
 # -----------------------------------------------
 
 class GeneralFeatures(commands.Cog):
-    """Handles core bot events, automod processing, XP granting, and ping responses."""
+    """Handles core bot events, automod processing, XP granting, LLM-powered responses, and ping responses."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -45,6 +45,8 @@ class GeneralFeatures(commands.Cog):
             "Role mentioned! Just ensuring the correct attention is given.",
             "Acknowledging the role mention. Running `/help` shows what I can do for the team."
         ]
+        # This will hold your studio context for LLM grounding (pre-loading in main bot file)
+        self.studio_context = self.bot.get_studio_context()
 
     # --- Events ---
 
@@ -94,6 +96,7 @@ class GeneralFeatures(commands.Cog):
                     description=config.get('message', 'Hope you enjoy your stay!'),
                     color=discord.Color.from_rgb(10, 10, 50)
                 )
+                # Ensure randomized banner is used for welcome message
                 embed.set_image(url=self.bot.get_random_banner_url())
                 await channel.send(member.mention, embed=embed)
 
@@ -110,6 +113,7 @@ class GeneralFeatures(commands.Cog):
                     description=config.get('message', 'Sad to see you go.'),
                     color=discord.Color.dark_red()
                 )
+                # Ensure randomized banner is used for goodbye message
                 embed.set_image(url=self.bot.get_random_banner_url())
                 await channel.send(embed=embed)
 
@@ -132,12 +136,14 @@ class GeneralFeatures(commands.Cog):
         # --- 1. Ping and Role Response Check ---
         
         # Check for direct bot mention (e.g., @Lagoona)
-        if self.bot.user in message.mentions:
+        is_bot_pinged = self.bot.user in message.mentions
+        if is_bot_pinged:
+            # If pinged, provide a conversational ping response
             response = random.choice(self.ping_messages)
             embed = Embed(description=response, color=discord.Color.teal())
             await message.channel.send(f"{message.author.mention}", embed=embed)
-            return
-
+            # Do NOT return here, continue to check automod, XP, and process command/LLM
+        
         # Check for any of the bot's owned roles being mentioned
         bot_member = message.guild.get_member(self.bot.user.id)
         if bot_member:
@@ -147,7 +153,7 @@ class GeneralFeatures(commands.Cog):
                     embed = Embed(description=response, color=discord.Color.light_grey())
                     # Send a subtle acknowledgement, deleting after a short time
                     await message.channel.send(embed=embed, delete_after=10)
-                    return
+                    # Do NOT return here, continue to check automod, XP, and process command/LLM
 
         # --- 2. Automod Check (and Bypass) ---
         
@@ -157,20 +163,60 @@ class GeneralFeatures(commands.Cog):
              # Run the strict automod logic
              is_deleted = await self.process_automod(message)
              if is_deleted:
-                 return # Stop processing commands or XP if message was deleted
+                 return # Stop processing commands, XP, or LLM if message was deleted
         
-        # --- 3. XP Granting ---
-        # Grant XP if the message is not a command and was not deleted by automod
-        if not message.content.startswith(self.bot.command_prefix):
+        # --- 3. Command and XP Granting ---
+        # Process any standard or slash commands first
+        await self.bot.process_commands(message)
+
+        # Grant XP if the message is NOT a command (i.e., it didn't start with the prefix) and was not deleted
+        if not message.content.startswith(self.bot.command_prefix) and not is_deleted:
             xp_amount = random.randint(15, 25)
             new_level = self.bot.add_xp(member.id, xp_amount)
             
             if new_level is not None:
                 await self.bot.send_level_up_message(member, new_level)
 
-        # Process any standard or slash commands
-        await self.bot.process_commands(message)
+            # --- 4. Gemini API Response (Answering questions even if not pinged) ---
+            # If the message wasn't a command and wasn't deleted, see if it's a question for the LLM.
+            await self.process_llm_response(message)
 
+
+    async def process_llm_response(self, message):
+        """
+        Processes non-command, non-pinged messages to check if they are questions 
+        that Lagoona can answer using the Gemini API and Studio context.
+        """
+        
+        # Simple heuristic to determine if it's a question worth answering
+        content = message.content.strip()
+        is_a_question = content.endswith('?') or any(content.lower().startswith(word) for word in ['what', 'where', 'how', 'when', 'who', 'why', 'can', 'is', 'does'])
+        
+        if not is_a_question or len(content) < 10:
+            return # Too short or not clearly a question
+
+        # Set up a brief "typing" indicator to show the bot is thinking
+        async with message.channel.typing():
+            try:
+                # Call the external method (assumed to be on the bot object) which uses the Gemini API
+                # Pass the studio context for grounding the response.
+                response_text = await self.bot.call_gemini_api(
+                    prompt=content,
+                    studio_context=self.studio_context
+                )
+
+                if response_text:
+                    embed = Embed(
+                        description=response_text, 
+                        color=discord.Color.blurple()
+                    )
+                    embed.set_footer(text="Powered by Gemini for Stargame Studio knowledge.")
+                    await message.channel.send(embed=embed)
+                    
+            except Exception as e:
+                # Log any errors quietly and don't respond to the user
+                print(f"Gemini API call failed for message '{content[:30]}...': {e}")
+                
     async def process_automod(self, message):
         """Strictly processes messages against SG/Discord/Roblox rules."""
         guild = message.guild
