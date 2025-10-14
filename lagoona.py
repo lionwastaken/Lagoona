@@ -39,6 +39,7 @@ class LagoonaBot(commands.Bot):
         await self.load_extension("cogs.tickets")
         await self.load_extension("cogs.voice_commands")
         await self.load_extension("cogs.mention_response")
+        await self.load_extension("cogs.autoresponder")
 
         # Sync slash commands
         try:
