@@ -11,6 +11,8 @@ logger = logging.getLogger("voice")
 # Suppress yt_dlp console spam
 yt_dlp.utils.bug_reports_message = lambda: ""
 
+
+# --- Audio Source Helper ---
 class YTDLSource(discord.PCMVolumeTransformer):
     YTDL_OPTIONS = {
         "format": "bestaudio/best",
@@ -21,12 +23,13 @@ class YTDLSource(discord.PCMVolumeTransformer):
         "default_search": "auto",
         "source_address": "0.0.0.0"
     }
+
     FFMPEG_OPTIONS = {
         "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
         "options": "-vn"
     }
 
-    ytdl = yt_dlp.YoutubeDL(YTDLSource.YTDL_OPTIONS)
+    ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
@@ -36,8 +39,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
+        """Download or stream from a given URL."""
         loop = loop or asyncio.get_event_loop()
         data = await loop.run_in_executor(None, lambda: cls.ytdl.extract_info(url, download=not stream))
+
         if "entries" in data:
             data = data["entries"][0]
 
@@ -45,13 +50,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
         return cls(discord.FFmpegPCMAudio(filename, **cls.FFMPEG_OPTIONS), data=data)
 
 
+# --- Voice Cog ---
 class VoiceCog(commands.Cog):
-    """Handles voice channel join/leave and music playback"""
+    """Handles voice join/leave/play/pause/resume/stop commands."""
 
     def __init__(self, bot):
         self.bot = bot
-
-    # --- Slash commands ---
 
     @app_commands.command(name="join", description="Join your current voice channel.")
     async def join(self, interaction: discord.Interaction):
@@ -77,9 +81,9 @@ class VoiceCog(commands.Cog):
         await vc.disconnect()
         await interaction.response.send_message("👋 Left the voice channel!", ephemeral=True)
 
-    @app_commands.command(name="play", description="Play an audio or YouTube URL.")
+    @app_commands.command(name="play", description="Play audio from a YouTube or direct URL.")
     async def play(self, interaction: discord.Interaction, url: str):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(thinking=True)
         vc = interaction.guild.voice_client
         if not vc:
             if not interaction.user.voice:
@@ -94,27 +98,27 @@ class VoiceCog(commands.Cog):
             await interaction.followup.send(f"▶️ Now playing: **{player.title}**", ephemeral=False)
         except Exception as e:
             logger.exception("Error playing audio: %s", e)
-            await interaction.followup.send("❌ Failed to play audio.", ephemeral=True)
+            await interaction.followup.send("❌ Failed to play that audio.", ephemeral=True)
 
-    @app_commands.command(name="pause", description="Pause current audio.")
+    @app_commands.command(name="pause", description="Pause the current playback.")
     async def pause(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         if not vc or not vc.is_playing():
-            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            await interaction.response.send_message("Nothing is playing right now.", ephemeral=True)
             return
         vc.pause()
         await interaction.response.send_message("⏸️ Paused playback.", ephemeral=True)
 
-    @app_commands.command(name="resume", description="Resume playback.")
+    @app_commands.command(name="resume", description="Resume paused playback.")
     async def resume(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         if not vc or not vc.is_paused():
-            await interaction.response.send_message("Nothing is paused.", ephemeral=True)
+            await interaction.response.send_message("Nothing is paused right now.", ephemeral=True)
             return
         vc.resume()
         await interaction.response.send_message("▶️ Resumed playback.", ephemeral=True)
 
-    @app_commands.command(name="stop", description="Stop playback and clear queue.")
+    @app_commands.command(name="stop", description="Stop current audio playback.")
     async def stop(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         if not vc or not vc.is_playing():
@@ -122,6 +126,7 @@ class VoiceCog(commands.Cog):
             return
         vc.stop()
         await interaction.response.send_message("⏹️ Stopped playback.", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VoiceCog(bot))
