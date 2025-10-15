@@ -83,18 +83,20 @@ class SmartResponder(commands.Cog):
 
     # --- REACT and SKIP in announcement channels ---
     @commands.Cog.listener()
-    async def on_message(self, msg: discord.Message):
-        if not msg.guild or msg.author.bot:
+    async def on_message_edit(self, before, after):
+    if after.author == self.bot.user and after.embeds:
+        if before.embeds == after.embeds:
             return
 
         # 1️⃣ announcement / news channels
-        if getattr(msg.channel, "is_news", lambda: False)():
-            for emoji in ("⭐", "💛", "🫶"):
-                try:
-                    await msg.add_reaction(emoji)
-                except Exception:
-                    pass
-            return
+   if getattr(msg.channel, "is_news", lambda: False)():
+    for emoji in ("⭐", "💛", "🫶"):
+        try:
+            await msg.add_reaction(emoji)
+            await asyncio.sleep(0.4)   # small pause to avoid 429s
+        except Exception:
+            pass
+    return
 
         # 2️⃣ normal chat: react if Lagoona mentioned by name or ping
         content_lower = msg.content.lower()
