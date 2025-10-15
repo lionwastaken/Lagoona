@@ -14,8 +14,8 @@ BANNED_TOPICS = ("politic", "religion", "church", "bible", "islam", "christian",
 
 # --- image list for embeds / cards (update with your two URLs) ---
 ANNOUNCEMENT_IMAGES = [
-    "https://example.com/lagoona_banner1.png",
-    "https://example.com/lagoona_banner2.png",
+    "https://i.postimg.cc/28fmdWX2/officialbanner.png",
+    "https://i.postimg.cc/PrkhbDF7/SGStudio-Banner-Edited.png",
 ]
 
 # -----------------------------------------------------------
