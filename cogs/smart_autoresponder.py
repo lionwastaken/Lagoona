@@ -1,50 +1,48 @@
 # cogs/smart_autoresponder.py
-import discord
+import discord, aiohttp, asyncio, os, logging, random, re
+
 from discord.ext import commands
-from discord import app_commands
-import aiohttp, asyncio, os, re, logging, random
 
 logger = logging.getLogger("smart_autoresponder")
 
-AUTO_ENABLED = set()
+# --- random banner images for Lagoona's embeds / cards ---
+BANNERS = [
+    "https://example.com/lagoona_banner1.png",   # replace with your first image URL
+    "https://example.com/lagoona_banner2.png",   # replace with your second image URL
+]
 
-# --- topic filters ---
+# --- topics to avoid ---
 BANNED_TOPICS = ("politic", "religion", "church", "bible", "islam", "christian",
                  "atheis", "football", "soccer", "nba", "cricket", "hockey")
 
-# --- image list for embeds / cards (update with your two URLs) ---
-ANNOUNCEMENT_IMAGES = [
-    "https://i.postimg.cc/28fmdWX2/officialbanner.png",
-    "https://i.postimg.cc/PrkhbDF7/SGStudio-Banner-Edited.png",
-]
 
-# -----------------------------------------------------------
-async def query_llm(prompt: str) -> str:
-    """Query Gemini or ChatGPT; limited to technical/Roblox topics."""
+# -------------------------------------------------
+async def call_llm(prompt: str) -> str:
+    """Query Gemini or ChatGPT with restricted topic scope."""
     gemini = os.getenv("GEMINI_API_KEY")
     openai = os.getenv("CHATGPT_API_KEY")
     try:
         async with aiohttp.ClientSession() as s:
             if gemini:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={gemini}"
-                body = {
-                    "contents": [{
-                        "parts": [{
-                            "text":
-                                ("Answer only technical, studio-related or Roblox questions. "
-                                 "Decline or redirect any unrelated, political, sports or religious topics. "
-                                 "Keep tone friendly, helpful, lively, short. "
-                                 f"User: {prompt}")
-                        }]
+                body = {"contents": [{
+                    "parts": [{
+                        "text": (
+                            "You are Lagoona, a lively Roblox Studio assistant. "
+                            "Answer only technical, creative-studio, or Roblox-related questions. "
+                            "If the user asks about politics, religion, or sports, "
+                            "say 'That’s outside the studio’s scope 🌊 let's keep it on Roblox topics!' "
+                            f"User: {prompt}"
+                        )
                     }]
-                }
+                }]}
                 async with s.post(url, json=body) as r:
-                    data = await r.json()
+                    d = await r.json()
                     return (
-                        data.get("candidates", [{}])[0]
+                        d.get("candidates", [{}])[0]
                         .get("content", {})
                         .get("parts", [{}])[0]
-                        .get("text", "🌊 I didn’t catch that, can you rephrase?")
+                        .get("text", "🌊 Hmm, can you rephrase that?")
                     )
 
             elif openai:
@@ -54,11 +52,13 @@ async def query_llm(prompt: str) -> str:
                     "model": "gpt-3.5-turbo",
                     "messages": [
                         {"role": "system",
-                         "content": ("You are Lagoona, a lively technical assistant for a Roblox Studio server. "
-                                     "Answer clearly and with enthusiasm. "
-                                     "Only discuss Roblox, scripting, building, design, or studio-related questions. "
-                                     "If asked about politics, sports, or religion, respond: "
-                                     "'That’s outside the studio’s scope 🌊 let's keep it on Roblox or dev topics!'")},
+                         "content": (
+                             "You are Lagoona, a lively Roblox Studio assistant. "
+                             "Only discuss scripting, building, design, or studio questions. "
+                             "Avoid politics, religion, or sports. "
+                             "Politely redirect off-topic chats. "
+                             "Use cheerful, short answers with emojis sometimes."
+                         )},
                         {"role": "user", "content": prompt},
                     ],
                     "temperature": 0.9,
@@ -67,79 +67,67 @@ async def query_llm(prompt: str) -> str:
                     d = await r.json()
                     if "choices" in d:
                         return d["choices"][0]["message"]["content"].strip()
-                    logger.warning("ChatGPT response: %s", d)
-                    return "🌊 My mind’s drifting; try again?"
-
-        return "LLM keys not configured."
+                    return "🌊 My thoughts got swept away—try again?"
+        return "LLM key not configured."
     except Exception as e:
         logger.exception("LLM error: %s", e)
-        return "💫 The currents are noisy; try again soon!"
-# -----------------------------------------------------------
+        return "💫 The waves are noisy—try again later!"
+# -------------------------------------------------
+
 
 class SmartResponder(commands.Cog):
-    """Smarter auto-responder restricted to studio / Roblox topics."""
+    """Automatically reacts in announcement channels and chats anywhere Lagoona is mentioned."""
 
     def __init__(self, bot):
         self.bot = bot
 
-    # Toggle
-    @app_commands.command(name="autorespond", description="Toggle Lagoona auto-response for this channel.")
-    @app_commands.describe(mode="on_or_off")
-    async def autorespond(self, inter: discord.Interaction, mode: str):
-        mode = mode.lower()
-        cid = inter.channel.id
-        if mode == "on":
-            AUTO_ENABLED.add(cid)
-            await inter.response.send_message("✅ Auto-respond enabled here.", ephemeral=True)
-        elif mode == "off":
-            AUTO_ENABLED.discard(cid)
-            await inter.response.send_message("❎ Auto-respond disabled.", ephemeral=True)
-        else:
-            await inter.response.send_message("Use `/autorespond on` or `/autorespond off`.", ephemeral=True)
-
-    # Listen
+    # --- REACT and SKIP in announcement channels ---
     @commands.Cog.listener()
     async def on_message(self, msg: discord.Message):
         if not msg.guild or msg.author.bot:
             return
 
-        # Skip announcement channels
+        # 1️⃣ announcement / news channels
         if getattr(msg.channel, "is_news", lambda: False)():
-            # react to new messages automatically
             for emoji in ("⭐", "💛", "🫶"):
-                try: await msg.add_reaction(emoji)
-                except Exception: pass
+                try:
+                    await msg.add_reaction(emoji)
+                except Exception:
+                    pass
             return
 
-        if msg.channel.id not in AUTO_ENABLED:
-            return
+        # 2️⃣ normal chat: react if Lagoona mentioned by name or ping
+        content_lower = msg.content.lower()
 
-        content = msg.content.strip()
-        if not content:
-            return
+        if (self.bot.user and (self.bot.user.mentioned_in(msg) or "lagoona" in content_lower)):
+            # avoid off-topic replies
+            if any(t in content_lower for t in BANNED_TOPICS):
+                await msg.reply("That’s outside the studio’s scope 🌊 let's keep it on Roblox topics!")
+                return
 
-        # Filter banned topics before sending to API
-        lowered = content.lower()
-        if any(t in lowered for t in BANNED_TOPICS):
-            await msg.reply("Let's keep it about Roblox and the studio 🌊")
-            return
+            async with msg.channel.typing():
+                reply_text = await call_llm(msg.content)
+                await asyncio.sleep(0.3)
 
-        async with msg.channel.typing():
-            reply = await query_llm(content)
-            await asyncio.sleep(0.3)
+            # create lively embed with random banner
+            embed = discord.Embed(
+                title="🌊 Lagoona",
+                description=reply_text,
+                color=discord.Color.blurple()
+            )
+            embed.set_image(url=random.choice(BANNERS))
 
-        try:
-            await msg.reply(f"{msg.author.mention} {reply}")
-        except Exception as e:
-            logger.warning("Reply failed: %s", e)
+            try:
+                await msg.reply(embed=embed, mention_author=False)
+            except Exception as e:
+                logger.warning("Embed reply failed: %s", e)
 
-    # Add random image to Lagoona's embeds / cards
+    # --- Replace Lagoona's own announcement cards with random banner image ---
     @commands.Cog.listener()
-    async def on_message_edit(self, before, after):
-        # Example: if Lagoona posts embeds elsewhere, decorate them
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if after.author == self.bot.user and after.embeds:
             for embed in after.embeds:
-                embed.set_image(url=random.choice(ANNOUNCEMENT_IMAGES))
+                embed.set_image(url=random.choice(BANNERS))
             try:
                 await after.edit(embeds=after.embeds)
             except Exception:
